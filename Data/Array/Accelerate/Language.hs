@@ -49,7 +49,11 @@ module Data.Array.Accelerate.Language (
   streamIn, toSeq,
 
   -- * Sequence transudcers
-  mapSeq, zipWithSeq, scanSeq,
+  scanSeq,
+
+  {-unitS,-} replicateS, generateS, {- reshapeS, -} sliceS, mapS, zipWithS,
+  foldS, fold1S, foldSegS, fold1SegS, scanlS, scanl1S, scanrS, scanr1S,
+  permuteS, backpermuteS, stencilS, stencil2S,
 
   -- * Sequence consumers
   foldSeq, foldSeqFlatten,
@@ -93,7 +97,7 @@ module Data.Array.Accelerate.Language (
   cond, while,
 
   -- * Array operations with a scalar result
-  (!), (!!), shape, size, shapeSize,
+  (!), (!!), (<!>), (<!!>), shape, shapeS, size, shapeSize,
 
   -- * Methods of H98 classes that we need to redefine as their signatures change
   (==*), (/=*), (<*), (<=*), (>*), (>=*),
@@ -149,6 +153,11 @@ use = Acc . Use
 unit :: Elt e => Exp e -> Acc (Scalar e)
 unit = Acc . Unit
 
+{-
+unitS :: Elt e => Exp e -> Seq [Scalar e]
+unitS = Seq . SeqOp . Unit
+-}
+
 -- | Replicate an array across one or more dimensions as specified by the
 -- /generalised/ array index provided as the first argument.
 --
@@ -163,7 +172,13 @@ replicate :: (Slice slix, Elt e)
           => Exp slix
           -> Acc (Array (SliceShape slix) e)
           -> Acc (Array (FullShape  slix) e)
-replicate = Acc $$ Replicate
+replicate = Acc . ArrayOp $$ Replicate
+
+replicateS :: (Slice slix, Elt e)
+           => Exp slix
+           -> Seq [Array (SliceShape slix) e]
+           -> Seq [Array (FullShape  slix) e]
+replicateS sh s = Seq (SeqOp (Replicate sh (Unfolded s)))
 
 -- | Construct a new array by applying a function to each index.
 --
@@ -196,7 +211,14 @@ generate :: (Shape ix, Elt a)
          => Exp ix
          -> (Exp ix -> Exp a)
          -> Acc (Array ix a)
-generate = Acc $$ Generate
+generate = Acc . ArrayOp $$ Generate
+
+generateS :: (Shape ix, Elt a)
+          => Exp ix
+          -> (Exp ix -> Exp a)
+          -> Seq [Array ix a]
+generateS = Seq . SeqOp $$ Generate
+
 
 -- Shape manipulation
 -- ------------------
@@ -211,6 +233,14 @@ reshape :: (Shape ix, Shape ix', Elt e)
         -> Acc (Array ix' e)
         -> Acc (Array ix e)
 reshape = Acc $$ Reshape
+
+{-
+reshapeS :: (Shape ix, Shape ix', Elt e)
+         => Exp ix
+         -> Seq [Array ix' e]
+         -> Seq [Array ix e]
+reshapeS sh s = Seq (SeqOp (Reshape sh (Unfolded s)))
+-}
 
 -- Extraction of sub-arrays
 -- ------------------------
@@ -233,7 +263,13 @@ slice :: (Slice slix, Elt e)
       => Acc (Array (FullShape slix) e)
       -> Exp slix
       -> Acc (Array (SliceShape slix) e)
-slice = Acc $$ Slice
+slice = Acc . ArrayOp $$ Slice
+
+sliceS :: (Slice slix, Elt e)
+       => Seq [Array (FullShape slix) e]
+       -> Exp slix
+       -> Seq [Array (SliceShape slix) e]
+sliceS s sh = Seq (SeqOp (Slice (Unfolded s) sh))
 
 -- Map-like functions
 -- ------------------
@@ -244,7 +280,13 @@ map :: (Shape ix, Elt a, Elt b)
     => (Exp a -> Exp b)
     -> Acc (Array ix a)
     -> Acc (Array ix b)
-map = Acc $$ Map
+map = Acc . ArrayOp $$ Map
+
+mapS :: (Shape ix, Elt a, Elt b)
+     => (Exp a -> Exp b)
+     -> Seq [Array ix a]
+     -> Seq [Array ix b]
+mapS f s = Seq (SeqOp (Map f (Unfolded s)))
 
 -- | Apply the given binary function element-wise to the two arrays.  The extent of the resulting
 -- array is the intersection of the extents of the two source arrays.
@@ -254,7 +296,15 @@ zipWith :: (Shape ix, Elt a, Elt b, Elt c)
         -> Acc (Array ix a)
         -> Acc (Array ix b)
         -> Acc (Array ix c)
-zipWith = Acc $$$ ZipWith
+zipWith = Acc . ArrayOp $$$ ZipWith
+
+zipWithS :: (Shape ix, Elt a, Elt b, Elt c)
+         => (Exp a -> Exp b -> Exp c)
+         -> Seq [Array ix a]
+         -> Seq [Array ix b]
+         -> Seq [Array ix c]
+zipWithS f s1 s2 = Seq (SeqOp (ZipWith f (Unfolded s1) (Unfolded s2)))
+
 
 -- Reductions
 -- ----------
@@ -268,7 +318,14 @@ fold :: (Shape ix, Elt a)
      -> Exp a
      -> Acc (Array (ix:.Int) a)
      -> Acc (Array ix a)
-fold = Acc $$$ Fold
+fold = Acc . ArrayOp $$$ Fold
+
+foldS :: (Shape ix, Elt a)
+      => (Exp a -> Exp a -> Exp a)
+      -> Exp a
+      -> Seq [Array (ix:.Int) a]
+      -> Seq [Array ix a]
+foldS f e s = Seq (SeqOp (Fold f e (Unfolded s)))
 
 -- | Variant of 'fold' that requires the reduced array to be non-empty and
 -- doesn't need an default value.  The first argument needs to be an
@@ -278,7 +335,13 @@ fold1 :: (Shape ix, Elt a)
       => (Exp a -> Exp a -> Exp a)
       -> Acc (Array (ix:.Int) a)
       -> Acc (Array ix a)
-fold1 = Acc $$ Fold1
+fold1 = Acc . ArrayOp $$ Fold1
+
+fold1S :: (Shape ix, Elt a)
+       => (Exp a -> Exp a -> Exp a)
+       -> Seq [Array (ix:.Int) a]
+       -> Seq [Array ix a]
+fold1S f s = Seq (SeqOp (Fold1 f (Unfolded s)))
 
 -- | Segmented reduction along the innermost dimension.  Performs one individual
 -- reduction per segment of the source array.  These reductions proceed in
@@ -293,7 +356,15 @@ foldSeg :: (Shape ix, Elt a, Elt i, IsIntegral i)
         -> Acc (Array (ix:.Int) a)
         -> Acc (Segments i)
         -> Acc (Array (ix:.Int) a)
-foldSeg = Acc $$$$ FoldSeg
+foldSeg = Acc . ArrayOp $$$$ FoldSeg
+
+foldSegS :: (Shape ix, Elt a, Elt i, IsIntegral i)
+         => (Exp a -> Exp a -> Exp a)
+         -> Exp a
+         -> Seq [Array (ix:.Int) a]
+         -> Seq [Segments i]
+         -> Seq [Array (ix:.Int) a]
+foldSegS f e s1 s2 = Seq (SeqOp (FoldSeg f e (Unfolded s1) (Unfolded s2)))
 
 -- | Variant of 'foldSeg' that requires /all/ segments of the reduced array to
 -- be non-empty and doesn't need a default value.
@@ -306,7 +377,14 @@ fold1Seg :: (Shape ix, Elt a, Elt i, IsIntegral i)
          -> Acc (Array (ix:.Int) a)
          -> Acc (Segments i)
          -> Acc (Array (ix:.Int) a)
-fold1Seg = Acc $$$ Fold1Seg
+fold1Seg = Acc . ArrayOp $$$ Fold1Seg
+
+fold1SegS :: (Shape ix, Elt a, Elt i, IsIntegral i)
+         => (Exp a -> Exp a -> Exp a)
+         -> Seq [Array (ix:.Int) a]
+         -> Seq [Segments i]
+         -> Seq [Array (ix:.Int) a]
+fold1SegS f s1 s2 = Seq (SeqOp (Fold1Seg f (Unfolded s1) (Unfolded s2)))
 
 -- Scan functions
 -- --------------
@@ -321,7 +399,14 @@ scanl :: Elt a
       -> Exp a
       -> Acc (Vector a)
       -> Acc (Vector a)
-scanl = Acc $$$ Scanl
+scanl = Acc . ArrayOp $$$ Scanl
+
+scanlS :: Elt a
+       => (Exp a -> Exp a -> Exp a)
+       -> Exp a
+       -> Seq [Vector a]
+       -> Seq [Vector a]
+scanlS f e s = Seq (SeqOp (Scanl f e (Unfolded s)))
 
 -- | Variant of 'scanl', where the final result of the reduction is returned
 -- separately. Denotationally, we have
@@ -336,7 +421,7 @@ scanl' :: Elt a
        -> Exp a
        -> Acc (Vector a)
        -> (Acc (Vector a), Acc (Scalar a))
-scanl' = unatup2 . Acc $$$ Scanl'
+scanl' = unatup2 . Acc . ArrayOp $$$ Scanl'
 
 -- | Data.List style left-to-right scan without an initial value (aka inclusive
 -- scan).  Again, the first argument needs to be an /associative/ function.
@@ -348,7 +433,13 @@ scanl1 :: Elt a
        => (Exp a -> Exp a -> Exp a)
        -> Acc (Vector a)
        -> Acc (Vector a)
-scanl1 = Acc $$ Scanl1
+scanl1 = Acc . ArrayOp $$ Scanl1
+
+scanl1S :: Elt a
+        => (Exp a -> Exp a -> Exp a)
+        -> Seq [Vector a]
+        -> Seq [Vector a]
+scanl1S f s = Seq (SeqOp (Scanl1 f (Unfolded s)))
 
 -- | Right-to-left variant of 'scanl'.
 --
@@ -357,7 +448,14 @@ scanr :: Elt a
       -> Exp a
       -> Acc (Vector a)
       -> Acc (Vector a)
-scanr = Acc $$$ Scanr
+scanr = Acc . ArrayOp $$$ Scanr
+
+scanrS :: Elt a
+       => (Exp a -> Exp a -> Exp a)
+       -> Exp a
+       -> Seq [Vector a]
+       -> Seq [Vector a]
+scanrS f e s = Seq (SeqOp (Scanr f e (Unfolded s)))
 
 -- | Right-to-left variant of 'scanl''.
 --
@@ -366,7 +464,7 @@ scanr' :: Elt a
        -> Exp a
        -> Acc (Vector a)
        -> (Acc (Vector a), Acc (Scalar a))
-scanr' = unatup2 . Acc $$$ Scanr'
+scanr' = unatup2 . Acc . ArrayOp $$$ Scanr'
 
 -- | Right-to-left variant of 'scanl1'.
 --
@@ -374,7 +472,13 @@ scanr1 :: Elt a
        => (Exp a -> Exp a -> Exp a)
        -> Acc (Vector a)
        -> Acc (Vector a)
-scanr1 = Acc $$ Scanr1
+scanr1 = Acc . ArrayOp $$ Scanr1
+
+scanr1S :: Elt a
+        => (Exp a -> Exp a -> Exp a)
+        -> Seq [Vector a]
+        -> Seq [Vector a]
+scanr1S f s = Seq (SeqOp (Scanr1 f (Unfolded s)))
 
 -- Permutations
 -- ------------
@@ -394,7 +498,15 @@ permute :: (Shape ix, Shape ix', Elt a)
         -> (Exp ix -> Exp ix')          -- ^permutation
         -> Acc (Array ix  a)            -- ^array to be permuted
         -> Acc (Array ix' a)
-permute = Acc $$$$ Permute
+permute = Acc . ArrayOp $$$$ Permute
+
+permuteS :: (Shape ix, Shape ix', Elt a)
+         => (Exp a -> Exp a -> Exp a)    -- ^combination function
+         -> Seq [Array ix' a]            -- ^array of default values
+         -> (Exp ix -> Exp ix')          -- ^permutation
+         -> Seq [Array ix  a]            -- ^array to be permuted
+         -> Seq [Array ix' a]
+permuteS f s1 p s2 = Seq (SeqOp (Permute f (Unfolded s1) p (Unfolded s2)))
 
 -- | Backward permutation specified by an index mapping from the destination
 -- array specifying which element of the source array to read.
@@ -404,7 +516,14 @@ backpermute :: (Shape ix, Shape ix', Elt a)
             -> (Exp ix' -> Exp ix)      -- ^permutation
             -> Acc (Array ix  a)        -- ^source array
             -> Acc (Array ix' a)
-backpermute = Acc $$$ Backpermute
+backpermute = Acc . ArrayOp $$$ Backpermute
+
+backpermuteS :: (Shape ix, Shape ix', Elt a)
+             => Exp ix'                  -- ^shape of the result array
+             -> (Exp ix' -> Exp ix)      -- ^permutation
+             -> Seq [Array ix  a]        -- ^source array
+             -> Seq [Array ix' a]
+backpermuteS sh p s = Seq (SeqOp (Backpermute sh p (Unfolded s)))
 
 -- Stencil operations
 -- ------------------
@@ -451,7 +570,14 @@ stencil :: (Shape ix, Elt a, Elt b, Stencil ix a stencil)
         -> Boundary a                         -- ^boundary condition
         -> Acc (Array ix a)                   -- ^source array
         -> Acc (Array ix b)                   -- ^destination array
-stencil = Acc $$$ Stencil
+stencil = Acc . ArrayOp $$$ Stencil
+
+stencilS :: (Shape ix, Elt a, Elt b, Stencil ix a stencil)
+         => (stencil -> Exp b)                 -- ^stencil function
+         -> Boundary a                         -- ^boundary condition
+         -> Seq [Array ix a]                   -- ^source array
+         -> Seq [Array ix b]                   -- ^destination array
+stencilS f b s = Seq (SeqOp (Stencil f b (Unfolded s)))
 
 -- | Map a binary stencil of an array.  The extent of the resulting array is the
 -- intersection of the extents of the two source arrays.
@@ -459,14 +585,24 @@ stencil = Acc $$$ Stencil
 stencil2 :: (Shape ix, Elt a, Elt b, Elt c,
              Stencil ix a stencil1,
              Stencil ix b stencil2)
-        => (stencil1 -> stencil2 -> Exp c)    -- ^binary stencil function
-        -> Boundary a                         -- ^boundary condition #1
-        -> Acc (Array ix a)                   -- ^source array #1
-        -> Boundary b                         -- ^boundary condition #2
-        -> Acc (Array ix b)                   -- ^source array #2
-        -> Acc (Array ix c)                   -- ^destination array
-stencil2 = Acc $$$$$ Stencil2
+         => (stencil1 -> stencil2 -> Exp c)    -- ^binary stencil function
+         -> Boundary a                         -- ^boundary condition #1
+         -> Acc (Array ix a)                   -- ^source array #1
+         -> Boundary b                         -- ^boundary condition #2
+         -> Acc (Array ix b)                   -- ^source array #2
+         -> Acc (Array ix c)                   -- ^destination array
+stencil2 = Acc . ArrayOp $$$$$ Stencil2
 
+stencil2S :: (Shape ix, Elt a, Elt b, Elt c,
+              Stencil ix a stencil1,
+              Stencil ix b stencil2)
+          => (stencil1 -> stencil2 -> Exp c)    -- ^binary stencil function
+          -> Boundary a                         -- ^boundary condition #1
+          -> Seq [Array ix a]                   -- ^source array #1
+          -> Boundary b                         -- ^boundary condition #2
+          -> Seq [Array ix b]                   -- ^source array #2
+          -> Seq [Array ix c]                   -- ^destination array
+stencil2S f b1 s1 b2 s2 = Seq (SeqOp (Stencil2 f b1 (Unfolded s1) b2 (Unfolded s2)))
 
 -- Sequence operations
 -- ------------------
@@ -474,10 +610,11 @@ stencil2 = Acc $$$$$ Stencil2
 -- Common sequence types
 --
 
-streamIn :: Arrays a
-         => [a]
-         -> Seq [a]
-streamIn arrs = Seq (StreamIn arrs)
+streamIn :: (Shape sh, Elt e)
+         => Exp sh
+         -> [Array sh e]
+         -> Seq [Array sh e]
+streamIn sh arrs = Seq (StreamIn sh arrs)
 
 -- | Convert the given array to a sequence by dividing the array up into subarrays.
 -- The first argument captures how to the division should be performed. The
@@ -490,24 +627,6 @@ toSeq :: (Division slsix, Elt a)
       -> Acc (Array (FullShape (DivisionSlice slsix)) a)
       -> Seq [Array (SliceShape (DivisionSlice slsix)) a]
 toSeq spec acc = Seq (ToSeq spec acc)
-
--- | Apply the given array function element-wise to the given sequence.
---
-mapSeq :: (Arrays a, Arrays b)
-       => (Acc a -> Acc b)
-       -> Seq [a]
-       -> Seq [b]
-mapSeq = Seq $$ MapSeq
-
--- | Apply the given binary function element-wise to the two sequences.  The length of the resulting
--- sequence is the minumum of the lengths of the two source sequences.
---
-zipWithSeq :: (Arrays a, Arrays b, Arrays c)
-           => (Acc a -> Acc b -> Acc c)
-           -> Seq [a]
-           -> Seq [b]
-           -> Seq [c]
-zipWithSeq = Seq $$$ ZipWithSeq
 
 -- | scanSeq (+) a0 x seq. Scan a sequence x by combining each
 -- element using the given binary operation (+). (+) must be
@@ -561,7 +680,7 @@ foldSeq = Seq $$$ FoldSeq
 --   Forall b a1 a2. (b + a1) + a2 = b + (a1 ++ a2).
 --
 foldSeqFlatten :: (Arrays a, Shape jx, Elt b)
-               => (Acc a -> Acc (Vector jx) -> Acc (Vector b) -> Acc a)
+               => (Acc a -> Acc (Array (jx :. Int) b) -> Acc a)
                -> Acc a
                -> Seq [Array jx b]
                -> Seq a
@@ -743,10 +862,21 @@ infixl 9 !!
 (!!) :: (Shape ix, Elt e) => Acc (Array ix e) -> Exp Int -> Exp e
 (!!) = Exp $$ LinearIndex
 
+infixl 9 <!>
+(<!>) :: (Shape ix, Elt e) => Seq [Array ix e] -> Exp ix -> Exp e
+(<!>) = Exp $$ IndexS
+
+infixl 9 <!!>
+(<!!>) :: (Shape ix, Elt e) => Seq [Array ix e] -> Exp Int -> Exp e
+(<!!>) = Exp $$ LinearIndexS
+
 -- |Expression form that yields the shape of an array
 --
 shape :: (Shape ix, Elt e) => Acc (Array ix e) -> Exp ix
 shape = Exp . Shape
+
+shapeS :: (Shape ix, Elt e) => Seq [Array ix e] -> Exp ix
+shapeS = Exp . ShapeS
 
 -- |Expression form that yields the size of an array
 --

@@ -29,8 +29,9 @@
 module Data.Array.Accelerate.Smart (
 
   -- * HOAS AST
-  Acc(..), PreAcc(..), Exp(..), PreExp(..), Boundary(..), Stencil(..), Level,
-  PreSeq(..), Seq(..),
+  Acc(..), PreAcc(..), PreArrayOp(..),
+  Exp(..), PreExp(..), Boundary(..), Stencil(..), Level,
+  PreSeq(..), Seq(..), Unfolded(..),
 
   -- * Smart constructors for literals
   constant,
@@ -67,7 +68,7 @@ module Data.Array.Accelerate.Smart (
   ($$), ($$$), ($$$$), ($$$$$),
 
   -- Debugging
-  showPreAccOp, showPreExpOp, showPreSeqOp
+  showPreAccOp, showPreArrOp, showPreExpOp, showPreSeqOp
 
 ) where
 
@@ -81,8 +82,8 @@ import Data.Array.Accelerate.Type
 import Data.Array.Accelerate.Array.Sugar
 import Data.Array.Accelerate.Product
 import Data.Array.Accelerate.AST                hiding (
-  PreOpenAcc(..), OpenAcc(..), Acc, Stencil(..), PreOpenExp(..), OpenExp, PreExp, Exp, Seq, PreOpenSeq(..), Producer(..), Consumer(..),
-  showPreAccOp, showPreExpOp )
+  PreOpenAcc(..), PreOpenArrayOp(..), OpenAcc(..), Acc, Stencil(..), PreOpenExp(..), OpenExp, PreExp, Exp, Seq, PreOpenSeq(..), Producer(..), Consumer(..),
+  showPreAccOp, showPreArrOp, showPreExpOp )
 import qualified Data.Array.Accelerate.AST      as AST
 
 -- Array computations
@@ -140,140 +141,150 @@ data PreAcc acc seq exp as where
 
   Unit          :: Elt e
                 => exp e
-                -> PreAcc acc seq exp (Scalar e)
-
-  Generate      :: (Shape sh, Elt e)
-                => exp sh
-                -> (Exp sh -> exp e)
-                -> PreAcc acc seq exp (Array sh e)
+                -> PreAcc arr seq exp (Scalar e)
 
   Reshape       :: (Shape sh, Shape sh', Elt e)
                 => exp sh
-                -> acc (Array sh' e)
-                -> PreAcc acc seq exp (Array sh e)
+                -> arr (Array sh' e)
+                -> PreAcc arr seq exp (Array sh e)
+
+  ArrayOp       :: Arrays arrs
+                => PreArrayOp acc exp arrs
+                -> PreAcc acc seq exp arrs
+
+  Collect       :: Arrays arrs
+                => seq arrs
+                -> PreAcc acc seq exp arrs
+
+data PreArrayOp arr exp arrs where
+  Generate      :: (Shape sh, Elt e)
+                => exp sh
+                -> (Exp sh -> exp e)
+                -> PreArrayOp arr exp (Array sh e)
 
   Replicate     :: (Slice slix, Elt e,
                     Typeable (SliceShape slix), Typeable (FullShape slix))
                     -- the Typeable constraints shouldn't be necessary as they are implied by
                     -- 'SliceIx slix' — unfortunately, the (old) type checker doesn't grok that
                 => exp slix
-                -> acc            (Array (SliceShape slix) e)
-                -> PreAcc acc seq exp (Array (FullShape  slix) e)
+                -> arr            (Array (SliceShape slix) e)
+                -> PreArrayOp arr exp (Array (FullShape  slix) e)
 
   Slice         :: (Slice slix, Elt e,
                     Typeable (SliceShape slix), Typeable (FullShape slix))
                     -- the Typeable constraints shouldn't be necessary as they are implied by
                     -- 'SliceIx slix' — unfortunately, the (old) type checker doesn't grok that
-                => acc            (Array (FullShape  slix) e)
+                => arr            (Array (FullShape  slix) e)
                 -> exp slix
-                -> PreAcc acc seq exp (Array (SliceShape slix) e)
+                -> PreArrayOp arr exp (Array (SliceShape slix) e)
 
   Map           :: (Shape sh, Elt e, Elt e')
                 => (Exp e -> exp e')
-                -> acc (Array sh e)
-                -> PreAcc acc seq exp (Array sh e')
+                -> arr (Array sh e)
+                -> PreArrayOp arr exp (Array sh e')
 
   ZipWith       :: (Shape sh, Elt e1, Elt e2, Elt e3)
                 => (Exp e1 -> Exp e2 -> exp e3)
-                -> acc (Array sh e1)
-                -> acc (Array sh e2)
-                -> PreAcc acc seq exp (Array sh e3)
+                -> arr (Array sh e1)
+                -> arr (Array sh e2)
+                -> PreArrayOp arr exp (Array sh e3)
 
   Fold          :: (Shape sh, Elt e)
                 => (Exp e -> Exp e -> exp e)
                 -> exp e
-                -> acc (Array (sh:.Int) e)
-                -> PreAcc acc seq exp (Array sh e)
+                -> arr (Array (sh:.Int) e)
+                -> PreArrayOp arr exp (Array sh e)
 
   Fold1         :: (Shape sh, Elt e)
                 => (Exp e -> Exp e -> exp e)
-                -> acc (Array (sh:.Int) e)
-                -> PreAcc acc seq exp (Array sh e)
+                -> arr (Array (sh:.Int) e)
+                -> PreArrayOp arr exp (Array sh e)
 
   FoldSeg       :: (Shape sh, Elt e, Elt i, IsIntegral i)
                 => (Exp e -> Exp e -> exp e)
                 -> exp e
-                -> acc (Array (sh:.Int) e)
-                -> acc (Segments i)
-                -> PreAcc acc seq exp (Array (sh:.Int) e)
+                -> arr (Array (sh:.Int) e)
+                -> arr (Segments i)
+                -> PreArrayOp arr exp (Array (sh:.Int) e)
 
   Fold1Seg      :: (Shape sh, Elt e, Elt i, IsIntegral i)
                 => (Exp e -> Exp e -> exp e)
-                -> acc (Array (sh:.Int) e)
-                -> acc (Segments i)
-                -> PreAcc acc seq exp (Array (sh:.Int) e)
+                -> arr (Array (sh:.Int) e)
+                -> arr (Segments i)
+                -> PreArrayOp arr exp (Array (sh:.Int) e)
 
   Scanl         :: Elt e
                 => (Exp e -> Exp e -> exp e)
                 -> exp e
-                -> acc (Vector e)
-                -> PreAcc acc seq exp (Vector e)
+                -> arr (Vector e)
+                -> PreArrayOp arr exp (Vector e)
 
   Scanl'        :: Elt e
                 => (Exp e -> Exp e -> exp e)
                 -> exp e
-                -> acc (Vector e)
-                -> PreAcc acc seq exp (Vector e, Scalar e)
+                -> arr (Vector e)
+                -> PreArrayOp arr exp (Vector e, Scalar e)
 
   Scanl1        :: Elt e
                 => (Exp e -> Exp e -> exp e)
-                -> acc (Vector e)
-                -> PreAcc acc seq exp (Vector e)
+                -> arr (Vector e)
+                -> PreArrayOp arr exp (Vector e)
 
   Scanr         :: Elt e
                 => (Exp e -> Exp e -> exp e)
                 -> exp e
-                -> acc (Vector e)
-                -> PreAcc acc seq exp (Vector e)
+                -> arr (Vector e)
+                -> PreArrayOp arr exp (Vector e)
 
   Scanr'        :: Elt e
                 => (Exp e -> Exp e -> exp e)
                 -> exp e
-                -> acc (Vector e)
-                -> PreAcc acc seq exp (Vector e, Scalar e)
+                -> arr (Vector e)
+                -> PreArrayOp arr exp (Vector e, Scalar e)
 
   Scanr1        :: Elt e
                 => (Exp e -> Exp e -> exp e)
-                -> acc (Vector e)
-                -> PreAcc acc seq exp (Vector e)
+                -> arr (Vector e)
+                -> PreArrayOp arr exp (Vector e)
 
   Permute       :: (Shape sh, Shape sh', Elt e)
                 => (Exp e -> Exp e -> exp e)
-                -> acc (Array sh' e)
+                -> arr (Array sh' e)
                 -> (Exp sh -> exp sh')
-                -> acc (Array sh e)
-                -> PreAcc acc seq exp (Array sh' e)
+                -> arr (Array sh e)
+                -> PreArrayOp arr exp (Array sh' e)
 
   Backpermute   :: (Shape sh, Shape sh', Elt e)
                 => exp sh'
                 -> (Exp sh' -> exp sh)
-                -> acc (Array sh e)
-                -> PreAcc acc seq exp (Array sh' e)
+                -> arr (Array sh e)
+                -> PreArrayOp arr exp (Array sh' e)
 
   Stencil       :: (Shape sh, Elt a, Elt b, Stencil sh a stencil)
                 => (stencil -> exp b)
                 -> Boundary a
-                -> acc (Array sh a)
-                -> PreAcc acc seq exp (Array sh b)
+                -> arr (Array sh a)
+                -> PreArrayOp arr exp (Array sh b)
 
   Stencil2      :: (Shape sh, Elt a, Elt b, Elt c,
                    Stencil sh a stencil1, Stencil sh b stencil2)
                 => (stencil1 -> stencil2 -> exp c)
                 -> Boundary a
-                -> acc (Array sh a)
+                -> arr (Array sh a)
                 -> Boundary b
-                -> acc (Array sh b)
-                -> PreAcc acc seq exp (Array sh c)
+                -> arr (Array sh b)
+                -> PreArrayOp arr exp (Array sh c)
 
-  Collect       :: Arrays arrs
-                => seq arrs
-                -> PreAcc acc seq exp arrs
+-- Data type of unfolded (= not consumed yet) sequences.
+data Unfolded seq a where
+  Unfolded :: seq [a] -> Unfolded seq a
 
 data PreSeq acc seq exp arrs where
   -- Convert the given Haskell-list of arrays to a sequence.
-  StreamIn :: Arrays a
-           => [a]
-           -> PreSeq acc seq exp [a]
+  StreamIn :: (Shape sh, Elt e)
+           => exp sh
+           -> [Array sh e]
+           -> PreSeq acc seq exp [Array sh e]
 
   -- Convert the given array to a sequence.
   -- Example:
@@ -291,20 +302,9 @@ data PreSeq acc seq exp arrs where
         -> acc (Array (FullShape slix) e)
         -> PreSeq acc seq exp [Array (SliceShape slix) e]
 
-  -- Apply the given the given function to all elements of the given sequence.
-  MapSeq :: (Arrays a, Arrays b)
-         => (Acc a -> acc b)
-         -> seq [a]
-         -> PreSeq acc seq exp [b]
-
-  -- Apply a given binary function pairwise to all elements of the given sequences.
-  -- The length of the result is the length of the shorter of the two argument
-  -- arrays.
-  ZipWithSeq :: (Arrays a, Arrays b, Arrays c)
-             => (Acc a -> Acc b -> acc c)
-             -> seq [a]
-             -> seq [b]
-             -> PreSeq acc seq exp [c]
+  SeqOp :: (Shape sh, Elt e)
+        => PreArrayOp (Unfolded seq) exp (Array sh e)
+        -> PreSeq acc seq exp [Array sh e]
 
   -- ScanSeq (+) a0 x. Scan a sequence x by combining each element
   -- using the given binary operation (+). (+) must be associative:
@@ -354,7 +354,7 @@ data PreSeq acc seq exp arrs where
   --   Forall b a1 a2. (b + a1) + a2 = b + (a1 ++ a2).
   --
   FoldSeqFlatten :: (Arrays a, Shape sh, Elt e)
-                 => (Acc a -> Acc (Vector sh) -> Acc (Vector e) -> acc a)
+                 => (Acc a -> Acc (Array (sh :. Int) e) -> acc a)
                  -> acc a
                  -> seq [Array sh e]
                  -> PreSeq acc seq exp a
@@ -487,6 +487,20 @@ data PreExp acc seq exp t where
                 -> exp sh
                 -> PreExp acc seq exp sh
 
+  IndexS        :: (Shape dim, Elt t)
+                => seq [Array dim t]
+                -> exp dim
+                -> PreExp acc seq exp t
+
+  LinearIndexS  :: (Shape dim, Elt t)
+                => seq [Array dim t]
+                -> exp Int
+                -> PreExp acc seq exp t
+
+  ShapeS        :: (Shape dim, Elt t)
+                => seq [Array dim t]
+                -> PreExp acc seq exp dim
+
   Foreign       :: (Elt x, Elt y, Foreign f)
                 => f x y
                 -> (Exp x -> Exp y) -- RCE: Using Exp instead of exp to aid in sharing recovery.
@@ -495,7 +509,7 @@ data PreExp acc seq exp t where
 
 -- | Scalar expressions for plain array computations.
 --
-newtype Exp t = Exp (PreExp Acc Seq Exp t)
+newtype Exp t  = Exp (PreExp Acc Seq Exp t)
 
 deriving instance Typeable Exp
 
@@ -1217,40 +1231,42 @@ infixr 0 $$$$$
 showPreAccOp :: forall acc seq exp arrs. PreAcc acc seq exp arrs -> String
 showPreAccOp (Atag i)           = "Atag " ++ show i
 showPreAccOp (Use a)            = "Use "  ++ showArrays a
+showPreAccOp Unit{}             = "Unit"
+showPreAccOp Reshape{}          = "Reshape"
 showPreAccOp Pipe{}             = "Pipe"
 showPreAccOp Acond{}            = "Acond"
 showPreAccOp Awhile{}           = "Awhile"
 showPreAccOp Atuple{}           = "Atuple"
 showPreAccOp Aprj{}             = "Aprj"
-showPreAccOp Unit{}             = "Unit"
-showPreAccOp Generate{}         = "Generate"
-showPreAccOp Reshape{}          = "Reshape"
-showPreAccOp Replicate{}        = "Replicate"
-showPreAccOp Slice{}            = "Slice"
-showPreAccOp Map{}              = "Map"
-showPreAccOp ZipWith{}          = "ZipWith"
-showPreAccOp Fold{}             = "Fold"
-showPreAccOp Fold1{}            = "Fold1"
-showPreAccOp FoldSeg{}          = "FoldSeg"
-showPreAccOp Fold1Seg{}         = "Fold1Seg"
-showPreAccOp Scanl{}            = "Scanl"
-showPreAccOp Scanl'{}           = "Scanl'"
-showPreAccOp Scanl1{}           = "Scanl1"
-showPreAccOp Scanr{}            = "Scanr"
-showPreAccOp Scanr'{}           = "Scanr'"
-showPreAccOp Scanr1{}           = "Scanr1"
-showPreAccOp Permute{}          = "Permute"
-showPreAccOp Backpermute{}      = "Backpermute"
-showPreAccOp Stencil{}          = "Stencil"
-showPreAccOp Stencil2{}         = "Stencil2"
-showPreAccOp Aforeign{}         = "Aforeign"
+showPreAccOp (ArrayOp op)        = showPreArrOp op
 showPreAccOp Collect{}          = "Collect"
+showPreAccOp Aforeign{}         = "Aforeign"
+
+showPreArrOp :: forall arr exp arrs. PreArrayOp arr exp arrs -> String
+showPreArrOp Generate{}         = "Generate"
+showPreArrOp Replicate{}        = "Replicate"
+showPreArrOp Slice{}            = "Slice"
+showPreArrOp Map{}              = "Map"
+showPreArrOp ZipWith{}          = "ZipWith"
+showPreArrOp Fold{}             = "Fold"
+showPreArrOp Fold1{}            = "Fold1"
+showPreArrOp FoldSeg{}          = "FoldSeg"
+showPreArrOp Fold1Seg{}         = "Fold1Seg"
+showPreArrOp Scanl{}            = "Scanl"
+showPreArrOp Scanl'{}           = "Scanl'"
+showPreArrOp Scanl1{}           = "Scanl1"
+showPreArrOp Scanr{}            = "Scanr"
+showPreArrOp Scanr'{}           = "Scanr'"
+showPreArrOp Scanr1{}           = "Scanr1"
+showPreArrOp Permute{}          = "Permute"
+showPreArrOp Backpermute{}      = "Backpermute"
+showPreArrOp Stencil{}          = "Stencil"
+showPreArrOp Stencil2{}         = "Stencil2"
 
 showPreSeqOp :: PreSeq acc seq exp arrs -> String
 showPreSeqOp (StreamIn{})       = "StreamIn"
 showPreSeqOp (ToSeq{})          = "ToSeq"
-showPreSeqOp (MapSeq{})         = "MapSeq"
-showPreSeqOp (ZipWithSeq{})     = "ZipWithSeq"
+showPreSeqOp (SeqOp op)         = showPreArrOp op
 showPreSeqOp (ScanSeq{})        = "ScanSeq"
 showPreSeqOp (FoldSeq{})        = "FoldSeq"
 showPreSeqOp (FoldSeqFlatten{}) = "FoldSeqFlatten"
@@ -1299,5 +1315,8 @@ showPreExpOp Shape{}            = "Shape"
 showPreExpOp ShapeSize{}        = "ShapeSize"
 showPreExpOp Intersect{}        = "Intersect"
 showPreExpOp Union{}            = "Union"
+showPreExpOp IndexS{}           = "IndexS"
+showPreExpOp LinearIndexS{}     = "LinearIndexS"
+showPreExpOp ShapeS{}           = "ShapeS"
 showPreExpOp Foreign{}          = "Foreign"
 

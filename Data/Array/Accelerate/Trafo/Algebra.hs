@@ -46,13 +46,13 @@ import qualified Data.Array.Accelerate.Debug            as Stats
 -- or constant let bindings. Be careful not to follow self-cycles.
 --
 propagate
-    :: forall acc env aenv exp. Kit acc
-    => Gamma acc env env aenv
-    -> PreOpenExp acc env aenv exp
+    :: forall acc env senv aenv exp. Kit acc
+    => Gamma acc env env senv aenv
+    -> PreOpenExp acc env senv aenv exp
     -> Maybe exp
 propagate env = cvtE
   where
-    cvtE :: PreOpenExp acc env aenv e -> Maybe e
+    cvtE :: PreOpenExp acc env senv aenv e -> Maybe e
     cvtE exp = case exp of
       Const c                                   -> Just (toElt c)
       PrimConst c                               -> Just (evalPrimConst c)
@@ -70,7 +70,7 @@ propagate env = cvtE
     cvtP ZeroTupIdx       (_, v)   = Just v
     cvtP (SuccTupIdx idx) (tup, _) = cvtP idx tup
 
-    cvtT :: TupleIdx t e -> Tuple (PreOpenExp acc env aenv) t -> Maybe e
+    cvtT :: TupleIdx t e -> Tuple (PreOpenExp acc env senv aenv) t -> Maybe e
     cvtT ZeroTupIdx       (SnocTup _   e) = cvtE e
     cvtT (SuccTupIdx idx) (SnocTup tup _) = cvtT idx tup
     cvtT _                _               = error "hey what's the head angle on that thing?"
@@ -79,11 +79,11 @@ propagate env = cvtE
 -- Attempt to evaluate primitive function applications
 --
 evalPrimApp
-    :: forall acc env aenv a r. (Kit acc, Elt a, Elt r)
-    => Gamma acc env env aenv
+    :: forall acc env senv aenv a r. (Kit acc, Elt a, Elt r)
+    => Gamma acc env env senv aenv
     -> PrimFun (a -> r)
-    -> PreOpenExp acc env aenv a
-    -> PreOpenExp acc env aenv r
+    -> PreOpenExp acc env senv aenv a
+    -> PreOpenExp acc env senv aenv r
 evalPrimApp env f x
   -- First attempt to move constant values towards the left
   | Just r      <- commutes f x env     = evalPrimApp env f r
@@ -157,11 +157,11 @@ evalPrimApp env f x
 -- to the left of the operator. Returning Nothing indicates no change is made.
 --
 commutes
-    :: forall acc env aenv a r. (Kit acc, Elt a, Elt r)
+    :: forall acc env senv aenv a r. (Kit acc, Elt a, Elt r)
     => PrimFun (a -> r)
-    -> PreOpenExp acc env aenv a
-    -> Gamma acc env env aenv
-    -> Maybe (PreOpenExp acc env aenv a)
+    -> PreOpenExp acc env senv aenv a
+    -> Gamma acc env env senv aenv
+    -> Maybe (PreOpenExp acc env senv aenv a)
 commutes f x env = case f of
   PrimAdd _     -> swizzle x
   PrimMul _     -> swizzle x
@@ -176,7 +176,7 @@ commutes f x env = case f of
   PrimLOr       -> swizzle x
   _             -> Nothing
   where
-    swizzle :: PreOpenExp acc env aenv (b,b) -> Maybe (PreOpenExp acc env aenv (b,b))
+    swizzle :: PreOpenExp acc env senv aenv (b,b) -> Maybe (PreOpenExp acc env senv aenv (b,b))
     swizzle (Tuple (NilTup `SnocTup` a `SnocTup` b))
       | Nothing         <- propagate env a
       , Just _          <- propagate env b
@@ -253,7 +253,7 @@ associates fun exp = case fun of
 -- Helper functions
 -- ----------------
 
-type a :-> b = forall acc env aenv. Kit acc => PreOpenExp acc env aenv a -> Gamma acc env env aenv -> Maybe (PreOpenExp acc env aenv b)
+type a :-> b = forall acc env senv aenv. Kit acc => PreOpenExp acc env senv aenv a -> Gamma acc env env senv aenv -> Maybe (PreOpenExp acc env senv aenv b)
 
 eval1 :: Elt b => (a -> b) -> a :-> b
 eval1 f x env
@@ -270,10 +270,10 @@ eval2 f (untup2 -> Just (x,y)) env
 eval2 _ _ _
   = Nothing
 
-tup2 :: (Elt a, Elt b) => (PreOpenExp acc env aenv a, PreOpenExp acc env aenv b) -> PreOpenExp acc env aenv (a, b)
+tup2 :: (Elt a, Elt b) => (PreOpenExp acc env senv aenv a, PreOpenExp acc env senv aenv b) -> PreOpenExp acc env senv aenv (a, b)
 tup2 (a,b) = Tuple (NilTup `SnocTup` a `SnocTup` b)
 
-untup2 :: PreOpenExp acc env aenv (a, b) -> Maybe (PreOpenExp acc env aenv a, PreOpenExp acc env aenv b)
+untup2 :: PreOpenExp acc env senv aenv (a, b) -> Maybe (PreOpenExp acc env senv aenv a, PreOpenExp acc env senv aenv b)
 untup2 exp
   | Tuple (NilTup `SnocTup` a `SnocTup` b) <- exp = Just (a, b)
   | otherwise                                     = Nothing

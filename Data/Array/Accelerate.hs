@@ -65,10 +65,10 @@ module Data.Array.Accelerate (
 
   -- ** Accessors
   -- *** Indexing
-  (L.!), (L.!!), P.the,
+  (L.!), (L.!!), (L.<!>), (L.<!!>), P.the,
 
   -- *** Shape information
-  P.null, P.length, L.shape, L.size, L.shapeSize,
+  P.null, P.length, L.shape, L.shapeS, L.size, L.shapeSize,
 
   -- *** Extracting sub-arrays
   L.slice,
@@ -155,10 +155,13 @@ module Data.Array.Accelerate (
   L.streamIn, L.toSeq, P.generateSeq,
 
   -- ** Sequence transducers
-  L.mapSeq, L.zipWithSeq, L.scanSeq,
+  {-L.unitS,-} L.replicateS, L.generateS, {-L.reshapeS,-} L.sliceS, L.mapS, L.zipWithS,
+  L.foldS, L.fold1S, L.foldSegS, L.fold1SegS, L.scanlS, L.scanl1S, L.scanrS, L.scanr1S,
+  L.permuteS, L.backpermuteS, L.stencilS, L.stencil2S,
+  L.scanSeq,
 
   -- ** Sequence consumers
-  L.foldSeq, L.foldSeqFlatten, P.fromSeq, P.fromSeqElems, P.fromSeqShapes,
+  L.foldSeq, L.foldSeqFlatten, P.fromSeq,
   P.toSeqInner, P.toSeqOuter2, P.toSeqOuter3,
 
   -- *** Specification
@@ -257,7 +260,7 @@ module Data.Array.Accelerate (
   P.index0, P.index1, P.unindex1, P.index2, P.unindex2,
   L.indexHead, L.indexTail,
   L.toIndex, L.fromIndex,
-  L.intersect,
+  L.intersect, L.union,
 
   -- *** Conversions
   L.ord, L.chr, L.boolToInt, L.fromIntegral,

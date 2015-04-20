@@ -17,7 +17,7 @@ module Data.Array.Accelerate.Analysis.Shape (
 
   -- * query AST dimensionality
   AccDim, accDim, delayedDim, preAccDim,
-  expDim,
+  expDim, reifyDim,
 
 ) where
 
@@ -73,30 +73,32 @@ preAccDim k pacc =
     Awhile _ _ acc       -> k acc
     Use Array{}          -> ndim (eltType (undefined::sh))
     Unit _               -> 0
-    Generate _ _         -> ndim (eltType (undefined::sh))
-    Transform _ _ _ _    -> ndim (eltType (undefined::sh))
     Reshape _ _          -> ndim (eltType (undefined::sh))
-    Replicate _ _ _      -> ndim (eltType (undefined::sh))
-    Slice _ _ _          -> ndim (eltType (undefined::sh))
-    Map _ acc            -> k acc
-    ZipWith _ _ acc      -> k acc
-    Fold _ _ acc         -> k acc - 1
-    Fold1 _ acc          -> k acc - 1
-    FoldSeg _ _ acc _    -> k acc
-    Fold1Seg _ acc _     -> k acc
-    Scanl _ _ acc        -> k acc
-    Scanl1 _ acc         -> k acc
-    Scanr _ _ acc        -> k acc
-    Scanr1 _ acc         -> k acc
-    Permute _ acc _ _    -> k acc
-    Backpermute _ _ _    -> ndim (eltType (undefined::sh))
-    Stencil _ _ acc      -> k acc
-    Stencil2 _ _ acc _ _ -> k acc
+    ArrayOp op           ->
+      case op of
+        Generate _ _         -> ndim (eltType (undefined::sh))
+        Transform _ _ _ _    -> ndim (eltType (undefined::sh))
+        Replicate _ _ _      -> ndim (eltType (undefined::sh))
+        Slice _ _ _          -> ndim (eltType (undefined::sh))
+        Map _ acc            -> k acc
+        ZipWith _ _ acc      -> k acc
+        Fold _ _ acc         -> k acc - 1
+        Fold1 _ acc          -> k acc - 1
+        FoldSeg _ _ acc _    -> k acc
+        Fold1Seg _ acc _     -> k acc
+        Scanl _ _ acc        -> k acc
+        Scanl1 _ acc         -> k acc
+        Scanr _ _ acc        -> k acc
+        Scanr1 _ acc         -> k acc
+        Permute _ acc _ _    -> k acc
+        Backpermute _ _ _    -> ndim (eltType (undefined::sh))
+        Stencil _ _ acc      -> k acc
+        Stencil2 _ _ acc _ _ -> k acc
 
 
 -- |Reify dimensionality of a scalar expression yielding a shape
 --
-expDim :: forall acc env aenv sh. Elt sh => PreOpenExp acc env aenv sh -> Int
+expDim :: forall acc env senv aenv sh. Elt sh => PreOpenExp acc env senv aenv sh -> Int
 expDim _ = ndim (eltType (undefined :: sh))
 
 
@@ -107,3 +109,5 @@ ndim UnitTuple       = 0
 ndim (SingleTuple _) = 1
 ndim (PairTuple a b) = ndim a + ndim b
 
+reifyDim :: forall sh e f. Shape sh => f (Array sh e) -> Int
+reifyDim _ = ndim (eltType (undefined :: sh))

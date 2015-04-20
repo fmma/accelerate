@@ -85,5 +85,8 @@ anormalise = cvt
         Shape a                 -> Shape (cvtA a)
         ShapeSize sh            -> ShapeSize (cvt sh)
         Intersect s t           -> Intersect (cvt s) (cvt t)
+        IndexS x sh             -> IndexS x (cvtE sh)
+        LinearIndexS x i        -> IndexS x (cvtE i)
+        ShapeS x                -> ShapeS x
         Foreign ff f e          -> Foreign ff (cvtF f) (cvt e)
 

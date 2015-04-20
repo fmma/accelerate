@@ -227,6 +227,7 @@ enumSlices :: forall slix co sl dim.
            -> dim
            -> [slix]
 enumSlices SliceNil () = [()]
-enumSlices (SliceAll   sl) (sh, _)  = [ (sh', ()) | sh' <- enumSlices sl sh]
+enumSlices (SliceAll   sl) (sh, _)  = [ (sh', ()) | sh' <- enumSlices sl sh ]
 enumSlices (SliceFixed sl) (sh, n)  = [ (sh', i)  | sh' <- enumSlices sl sh
-                                                  , i   <- [0..n-1]]
+                                                  , i   <- [0..n-1] ]
+

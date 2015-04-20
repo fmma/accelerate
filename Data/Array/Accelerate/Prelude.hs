@@ -93,7 +93,7 @@ module Data.Array.Accelerate.Prelude (
   the, null, length,
 
   -- * Sequence operations
-  fromSeq, fromSeqElems, fromSeqShapes, toSeqInner, toSeqOuter2, toSeqOuter3, generateSeq,
+  fromSeq, toSeqInner, toSeqOuter2, toSeqOuter3, generateSeq,
 
 ) where
 
@@ -101,6 +101,7 @@ module Data.Array.Accelerate.Prelude (
 --
 import Data.Bits
 import Data.Bool
+import Data.Typeable
 import Prelude ((.), ($), (+), (-), (*), const, id, min, max, Float, Double, Char)
 import qualified Prelude as P
 
@@ -1821,27 +1822,12 @@ length = unindex1 . shape
 -- Sequence operations
 -- --------------------------------------
 
--- | Reduce a sequence by appending all the shapes and all the
--- elements in two seperate vectors.
+-- | Reduce a sequence by appending all the elements.
 --
-fromSeq :: (Shape ix, Elt a) => Seq [Array ix a] -> Seq (Vector ix, Vector a)
-fromSeq = foldSeqFlatten f (lift (empty, empty))
-  where
-    f x sh1 a1 =
-      let (sh0, a0) = unlift x
-      in lift (sh0 ++ sh1, a0 ++ a1)
+fromSeq :: forall ix e. (Shape ix, Slice ix, Elt e) => Seq [Array ix e] -> Seq (Vector e)
+fromSeq = foldSeqFlatten (\ a b -> flatten a ++ flatten b) empty
 
-fromSeqElems :: (Shape ix, Elt a) => Seq [Array ix a] -> Seq (Vector a)
-fromSeqElems = foldSeqFlatten f empty
-  where
-    f a0 _ a1 = a0 ++ a1
-
-fromSeqShapes :: (Shape ix, Elt a) => Seq [Array ix a] -> Seq (Vector ix)
-fromSeqShapes = foldSeqFlatten f empty
-  where
-    f sh0 sh1 _ = sh0 ++ sh1
-
--- | Sequence an array on the innermost dimension.
+-- | Sequence an array on the innermost (rightmost) dimension.
 --
 toSeqInner :: (Shape sh, Elt a) => Acc (Array (sh :. Int) a) -> Seq [Array sh a]
 toSeqInner a = toSeq (Any :. Split) a
@@ -1860,3 +1846,37 @@ toSeqOuter3 a = toSeq (Z :. Split :. All :. All) a
 generateSeq :: Elt a => Exp Int -> (Exp Int -> Exp a) -> Seq [Scalar a]
 generateSeq n f = toSeq (Z :. Split) (generate (index1 n) (f . unindex1))
 
+indexInit :: forall sh. Typeable sh => Exp (sh :. Int) -> Exp sh
+indexInit sh
+  | P.Just (Refl :: sh :~: Z) <- eqT 
+  = lift Z
+  | P.Just (Refl :: sh :~: (Z :. Int)) <- eqT
+  = lift $ indexInit (indexTail sh) :. indexHead sh
+  | P.Just (Refl :: sh :~: (Z :. Int :. Int)) <- eqT
+  = lift $ indexInit (indexTail sh) :. indexHead sh
+  | P.Just (Refl :: sh :~: (Z :. Int :. Int :. Int)) <- eqT
+  = lift $ indexInit (indexTail sh) :. indexHead sh
+    
+indexLast :: forall sh. Typeable sh => Exp (sh :. Int) -> Exp Int
+indexLast sh
+  | P.Just (Refl :: sh :~: Z) <- eqT
+  = indexHead sh
+  | P.Just (Refl :: sh :~: (Z :. Int)) <- eqT
+  = lift $ indexLast (indexTail sh)
+  | P.Just (Refl :: sh :~: (Z :. Int :. Int)) <- eqT
+  = lift $ indexLast (indexTail sh)
+  | P.Just (Refl :: sh :~: (Z :. Int :. Int :. Int)) <- eqT
+  = lift $ indexLast (indexTail sh)
+
+
+infixr 3 .:
+(.:) :: forall sh. Typeable sh => Exp Int -> Exp sh -> Exp (sh :. Int)
+sz .: sh
+  | P.Just (Refl :: sh :~: Z) <- eqT
+  = lift $ Z :. sz
+  | P.Just (Refl :: sh :~: (Z :. Int)) <- eqT
+  = lift $ (sz .: indexTail sh) :. indexHead sh
+  | P.Just (Refl :: sh :~: (Z :. Int :. Int)) <- eqT
+  = lift $ (sz .: indexTail sh) :. indexHead sh
+  | P.Just (Refl :: sh :~: (Z :. Int :. Int :. Int)) <- eqT
+  = lift $ (sz .: indexTail sh) :. indexHead sh

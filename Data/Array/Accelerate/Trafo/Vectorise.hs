@@ -2699,7 +2699,7 @@ vectoriseOpenSeq strength ctx seq =
     cvtP :: Producer OpenAcc aenv senv t -> Producer OpenAcc aenv senv t
     cvtP p =
       case p of
-        StreamIn arrs        -> StreamIn arrs
+        StreamIn sh arrs     -> StreamIn (cvtE sh) arrs
         ToSeq sl slix a      -> ToSeq sl slix (cvtA a)
         -- Interesting case:
         MapSeq f x

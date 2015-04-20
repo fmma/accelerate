@@ -68,6 +68,8 @@ deriving instance Show (s :=: t)
 --
 type MatchAcc acc = forall aenv s t. acc aenv s -> acc aenv t -> Maybe (s :=: t)
 
+type MatchArr arr = forall s t. arr s -> arr t -> Maybe (s :=: t)
+
 
 -- Compute the congruence of two array computations. The nodes are congruent if
 -- they have the same operator and their operands are congruent.
@@ -86,10 +88,7 @@ matchPreOpenAcc
     -> Maybe (s :=: t)
 matchPreOpenAcc matchAcc hashAcc = match
   where
-    matchFun :: PreOpenFun acc env' aenv' u -> PreOpenFun acc env' aenv' v -> Maybe (u :=: v)
-    matchFun = matchPreOpenFun matchAcc hashAcc
-
-    matchExp :: PreOpenExp acc env' aenv' u -> PreOpenExp acc env' aenv' v -> Maybe (u :=: v)
+    matchExp :: PreOpenExp acc env' () aenv' u -> PreOpenExp acc env' () aenv' v -> Maybe (u :=: v)
     matchExp = matchPreOpenExp matchAcc hashAcc
 
     match :: PreOpenAcc acc aenv s -> PreOpenAcc acc aenv t -> Maybe (s :=: t)
@@ -138,15 +137,43 @@ matchPreOpenAcc matchAcc hashAcc = match
     match (Use a1) (Use a2)
       | Just REFL <- matchArrays (arrays (undefined::s)) (arrays (undefined::t)) a1 a2
       = gcast REFL
-
+    
     match (Unit e1) (Unit e2)
       | Just REFL <- matchExp e1 e2
       = Just REFL
 
     match (Reshape sh1 a1) (Reshape sh2 a2)
       | Just REFL <- matchExp sh1 sh2
-      , Just REFL <- matchAcc a1  a2
+      , Just REFL <- matchAcc a1 a2
       = Just REFL
+
+    match (ArrayOp op1) (ArrayOp op2)
+      | Just REFL <- matchPreOpenArrayOp matchAcc matchAcc hashAcc op1 op2
+      = Just REFL
+
+    match (Collect s1) (Collect s2)
+      = matchSeq matchAcc hashAcc s1 s2
+
+    match _ _
+      = Nothing
+
+matchPreOpenArrayOp
+    :: forall arr acc senv aenv s t.
+       MatchAcc acc
+    -> MatchArr arr
+    -> HashAcc  acc
+    -> PreOpenArrayOp arr acc senv aenv s
+    -> PreOpenArrayOp arr acc senv aenv t
+    -> Maybe (s :=: t)
+matchPreOpenArrayOp matchAcc matchArr hashAcc = match
+  where
+    matchFun :: PreOpenFun acc env' aenv' senv' u -> PreOpenFun acc env' aenv' senv' v -> Maybe (u :=: v)
+    matchFun = matchPreOpenFun matchAcc hashAcc
+
+    matchExp :: PreOpenExp acc env' aenv' senv' u -> PreOpenExp acc env' aenv' senv' v -> Maybe (u :=: v)
+    matchExp = matchPreOpenExp matchAcc hashAcc
+
+    match :: PreOpenArrayOp arr acc senv aenv s -> PreOpenArrayOp arr acc senv aenv t -> Maybe (s :=: t)
 
     match (Generate sh1 f1) (Generate sh2 f2)
       | Just REFL <- matchExp sh1 sh2
@@ -157,119 +184,116 @@ matchPreOpenAcc matchAcc hashAcc = match
       | Just REFL <- matchExp sh1 sh2
       , Just REFL <- matchFun ix1 ix2
       , Just REFL <- matchFun f1  f2
-      , Just REFL <- matchAcc a1  a2
+      , Just REFL <- matchArr a1  a2
       = Just REFL
 
     match (Replicate _ ix1 a1) (Replicate _ ix2 a2)
       | Just REFL <- matchExp ix1 ix2
-      , Just REFL <- matchAcc a1  a2
+      , Just REFL <- matchArr a1  a2
       = gcast REFL  -- slice specification ??
 
     match (Slice _ a1 ix1) (Slice _ a2 ix2)
-      | Just REFL <- matchAcc a1  a2
+      | Just REFL <- matchArr a1  a2
       , Just REFL <- matchExp ix1 ix2
       = gcast REFL  -- slice specification ??
 
     match (Map f1 a1) (Map f2 a2)
       | Just REFL <- matchFun f1 f2
-      , Just REFL <- matchAcc a1 a2
+      , Just REFL <- matchArr a1 a2
       = Just REFL
 
     match (ZipWith f1 a1 b1) (ZipWith f2 a2 b2)
       | Just REFL <- matchFun f1 f2
-      , Just REFL <- matchAcc a1 a2
-      , Just REFL <- matchAcc b1 b2
+      , Just REFL <- matchArr a1 a2
+      , Just REFL <- matchArr b1 b2
       = Just REFL
 
     match (Fold f1 z1 a1) (Fold f2 z2 a2)
       | Just REFL <- matchFun f1 f2
       , Just REFL <- matchExp z1 z2
-      , Just REFL <- matchAcc a1 a2
+      , Just REFL <- matchArr a1 a2
       = Just REFL
 
     match (Fold1 f1 a1) (Fold1 f2 a2)
       | Just REFL <- matchFun f1 f2
-      , Just REFL <- matchAcc a1 a2
+      , Just REFL <- matchArr a1 a2
       = Just REFL
 
     match (FoldSeg f1 z1 a1 s1) (FoldSeg f2 z2 a2 s2)
       | Just REFL <- matchFun f1 f2
       , Just REFL <- matchExp z1 z2
-      , Just REFL <- matchAcc a1 a2
-      , Just REFL <- matchAcc s1 s2
+      , Just REFL <- matchArr a1 a2
+      , Just REFL <- matchArr s1 s2
       = Just REFL
 
     match (Fold1Seg f1 a1 s1) (Fold1Seg f2 a2 s2)
       | Just REFL <- matchFun f1 f2
-      , Just REFL <- matchAcc a1 a2
-      , Just REFL <- matchAcc s1 s2
+      , Just REFL <- matchArr a1 a2
+      , Just REFL <- matchArr s1 s2
       = Just REFL
 
     match (Scanl f1 z1 a1) (Scanl f2 z2 a2)
       | Just REFL <- matchFun f1 f2
       , Just REFL <- matchExp z1 z2
-      , Just REFL <- matchAcc a1 a2
+      , Just REFL <- matchArr a1 a2
       = Just REFL
 
     match (Scanl' f1 z1 a1) (Scanl' f2 z2 a2)
       | Just REFL <- matchFun f1 f2
       , Just REFL <- matchExp z1 z2
-      , Just REFL <- matchAcc a1 a2
+      , Just REFL <- matchArr a1 a2
       = Just REFL
 
     match (Scanl1 f1 a1) (Scanl1 f2 a2)
       | Just REFL <- matchFun f1 f2
-      , Just REFL <- matchAcc a1 a2
+      , Just REFL <- matchArr a1 a2
       = Just REFL
 
     match (Scanr f1 z1 a1) (Scanr f2 z2 a2)
       | Just REFL <- matchFun f1 f2
       , Just REFL <- matchExp z1 z2
-      , Just REFL <- matchAcc a1 a2
+      , Just REFL <- matchArr a1 a2
       = Just REFL
 
     match (Scanr' f1 z1 a1) (Scanr' f2 z2 a2)
       | Just REFL <- matchFun f1 f2
       , Just REFL <- matchExp z1 z2
-      , Just REFL <- matchAcc a1 a2
+      , Just REFL <- matchArr a1 a2
       = Just REFL
 
     match (Scanr1 f1 a1) (Scanr1 f2 a2)
       | Just REFL <- matchFun f1 f2
-      , Just REFL <- matchAcc a1 a2
+      , Just REFL <- matchArr a1 a2
       = Just REFL
 
     match (Permute f1 d1 p1 a1) (Permute f2 d2 p2 a2)
       | Just REFL <- matchFun f1 f2
-      , Just REFL <- matchAcc d1 d2
+      , Just REFL <- matchArr d1 d2
       , Just REFL <- matchFun p1 p2
-      , Just REFL <- matchAcc a1 a2
+      , Just REFL <- matchArr a1 a2
       = Just REFL
 
     match (Backpermute sh1 ix1 a1) (Backpermute sh2 ix2 a2)
       | Just REFL <- matchExp sh1 sh2
       , Just REFL <- matchFun ix1 ix2
-      , Just REFL <- matchAcc a1  a2
+      , Just REFL <- matchArr a1  a2
       = Just REFL
 
-    match (Stencil f1 b1 (a1 :: acc aenv (Array sh1 e1)))
-          (Stencil f2 b2 (a2 :: acc aenv (Array sh2 e2)))
+    match (Stencil f1 b1 (a1 :: arr (Array sh1 e1)))
+          (Stencil f2 b2 (a2 :: arr (Array sh2 e2)))
       | Just REFL <- matchFun f1 f2
-      , Just REFL <- matchAcc a1 a2
+      , Just REFL <- matchArr a1 a2
       , matchBoundary (eltType (undefined::e1)) b1 b2
       = Just REFL
 
-    match (Stencil2 f1 b1  (a1  :: acc aenv (Array sh1  e1 )) b2  (a2 :: acc aenv (Array sh2  e2 )))
-          (Stencil2 f2 b1' (a1' :: acc aenv (Array sh1' e1')) b2' (a2':: acc aenv (Array sh2' e2')))
+    match (Stencil2 f1 b1  (a1  :: arr (Array sh1  e1 )) b2  (a2 :: arr (Array sh2  e2 )))
+          (Stencil2 f2 b1' (a1' :: arr (Array sh1' e1')) b2' (a2':: arr (Array sh2' e2')))
       | Just REFL <- matchFun f1 f2
-      , Just REFL <- matchAcc a1 a1'
-      , Just REFL <- matchAcc a2 a2'
+      , Just REFL <- matchArr a1 a1'
+      , Just REFL <- matchArr a2 a2'
       , matchBoundary (eltType (undefined::e1)) b1 b1'
       , matchBoundary (eltType (undefined::e2)) b2 b2'
       = Just REFL
-
-    match (Collect s1) (Collect s2)
-      = matchSeq matchAcc hashAcc s1 s2
 
     match _ _
       = Nothing
@@ -325,10 +349,10 @@ matchBoundary _  _            _            = False
 matchSeq :: forall acc aenv senv s t. MatchAcc acc -> HashAcc acc -> PreOpenSeq acc aenv senv s -> PreOpenSeq acc aenv senv t -> Maybe (s :=: t)
 matchSeq m h = match
   where
-    matchFun :: PreOpenFun acc env' aenv' u -> PreOpenFun acc env' aenv' v -> Maybe (u :=: v)
+    matchFun :: PreOpenFun acc env' aenv' senv' u -> PreOpenFun acc env' aenv' senv' v -> Maybe (u :=: v)
     matchFun = matchPreOpenFun m h
 
-    matchExp :: PreOpenExp acc env' aenv' u -> PreOpenExp acc env' aenv' v -> Maybe (u :=: v)
+    matchExp :: PreOpenExp acc env' aenv' senv' u -> PreOpenExp acc env' aenv' senv' v -> Maybe (u :=: v)
     matchExp = matchPreOpenExp m h
 
     match :: PreOpenSeq acc aenv senv' u -> PreOpenSeq acc aenv senv' v -> Maybe (u :=: v)
@@ -346,8 +370,9 @@ matchSeq m h = match
       = Nothing
 
     matchP :: Producer acc aenv senv' u -> Producer acc aenv senv' v -> Maybe (u :=: v)
-    matchP (StreamIn arrs1) (StreamIn arrs2)
-      | unsafePerformIO $ do
+    matchP (StreamIn sh1 arrs1) (StreamIn sh2 arrs2)
+      | Just REFL <- matchExp sh1 sh2
+      , unsafePerformIO $ do
           sn1 <- makeStableName arrs1
           sn2 <- makeStableName arrs2
           return $! hashStableName sn1 == hashStableName sn2
@@ -356,14 +381,8 @@ matchSeq m h = match
       | Just REFL <- gcast REFL :: Maybe (slix1 :=: slix2) -- Divisions are singleton.
       , Just REFL <- m a1 a2
       = gcast REFL
-    matchP (MapSeq f1 x1) (MapSeq f2 x2)
-      | Just REFL <- matchPreOpenAfun m f1 f2
-      , Just REFL <- matchIdx x1 x2
-      = Just REFL
-    matchP (ZipWithSeq f1 x1 y1) (ZipWithSeq f2 x2 y2)
-      | Just REFL <- matchPreOpenAfun m f1 f2
-      , Just REFL <- matchIdx x1 x2
-      , Just REFL <- matchIdx y1 y2
+    matchP (SeqOp op1) (SeqOp op2)
+      | Just REFL <- matchPreOpenArrayOp m matchIdx h op1 op2
       = Just REFL
     matchP (ScanSeq f1 e1 x1) (ScanSeq f2 e2 x2)
       | Just REFL <- matchFun f1 f2
@@ -424,19 +443,19 @@ matchArrays _ _ _ _
 -- The below attempts to use real typed equality, but occasionally still needs
 -- to use a cast, particularly when we can only match the representation types.
 --
-matchOpenExp :: OpenExp env aenv s -> OpenExp env aenv t -> Maybe (s :=: t)
+matchOpenExp :: OpenExp env senv aenv s -> OpenExp env senv aenv t -> Maybe (s :=: t)
 matchOpenExp = matchPreOpenExp matchOpenAcc hashOpenAcc
 
 matchPreOpenExp
-    :: forall acc env aenv s t.
+    :: forall acc env senv aenv s t.
        MatchAcc acc
     -> HashAcc  acc
-    -> PreOpenExp acc env aenv s
-    -> PreOpenExp acc env aenv t
+    -> PreOpenExp acc env senv aenv s
+    -> PreOpenExp acc env senv aenv t
     -> Maybe (s :=: t)
 matchPreOpenExp matchAcc hashAcc = match
   where
-    match :: forall env' aenv' s' t'. PreOpenExp acc env' aenv' s' -> PreOpenExp acc env' aenv' t' -> Maybe (s' :=: t')
+    match :: forall env' aenv' senv' s' t'. PreOpenExp acc env' aenv' senv' s' -> PreOpenExp acc env' aenv' senv' t' -> Maybe (s' :=: t')
     match (Let x1 e1) (Let x2 e2)
       | Just REFL <- match x1 x2
       , Just REFL <- match e1 e2
@@ -562,27 +581,42 @@ matchPreOpenExp matchAcc hashAcc = match
       , Just REFL <- match sb1 sb2
       = Just REFL
 
+    match (IndexS x1 e1) (IndexS x2 e2)
+      | Just REFL <- matchIdx x1 x2
+      , Just REFL <- match e1 e2
+      = Just REFL
+
+    match (LinearIndexS x1 e1) (LinearIndexS x2 e2)
+      | Just REFL <- matchIdx x1 x2
+      , Just REFL <- match e1 e2
+      = Just REFL
+
+
+    match (ShapeS x1) (ShapeS x2)
+      | Just REFL <- matchIdx x1 x2
+      = Just REFL
+
     match _ _
       = Nothing
 
 
 -- Match scalar functions
 --
-matchOpenFun :: OpenFun env aenv s -> OpenFun env aenv t -> Maybe (s :=: t)
+matchOpenFun :: OpenFun env senv aenv s -> OpenFun env senv aenv t -> Maybe (s :=: t)
 matchOpenFun = matchPreOpenFun matchOpenAcc hashOpenAcc
 
 matchPreOpenFun
     :: MatchAcc acc
     -> HashAcc  acc
-    -> PreOpenFun acc env aenv s
-    -> PreOpenFun acc env aenv t
+    -> PreOpenFun acc env senv aenv s
+    -> PreOpenFun acc env senv aenv t
     -> Maybe (s :=: t)
 matchPreOpenFun m h (Lam s) (Lam t)
   | Just REFL <- matchEnvTop         s t
   , Just REFL <- matchPreOpenFun m h s t
   = Just REFL
   where
-    matchEnvTop :: (Elt s, Elt t) => PreOpenFun acc (env, s) aenv f -> PreOpenFun acc (env, t) aenv g -> Maybe (s :=: t)
+    matchEnvTop :: (Elt s, Elt t) => PreOpenFun acc (env, s) senv aenv f -> PreOpenFun acc (env, t) senv aenv g -> Maybe (s :=: t)
     matchEnvTop _ _ = gcast REFL  -- ???
 
 matchPreOpenFun m h (Body s) (Body t) = matchPreOpenExp m h s t
@@ -622,8 +656,8 @@ matchTupleIdx _              _              = Nothing
 matchTuple
     :: MatchAcc acc
     -> HashAcc  acc
-    -> Tuple (PreOpenExp acc env aenv) s
-    -> Tuple (PreOpenExp acc env aenv) t
+    -> Tuple (PreOpenExp acc env senv aenv) s
+    -> Tuple (PreOpenExp acc env senv aenv) t
     -> Maybe (s :=: t)
 matchTuple _ _ NilTup          NilTup           = Just REFL
 matchTuple m h (SnocTup t1 e1) (SnocTup t2 e2)
@@ -901,11 +935,11 @@ matchNonNumType _              _              = Nothing
 -- commutativity.
 --
 commutes
-    :: forall acc env aenv a r.
+    :: forall acc env senv aenv a r.
        HashAcc acc
     -> PrimFun (a -> r)
-    -> PreOpenExp acc env aenv a
-    -> Maybe (PreOpenExp acc env aenv a)
+    -> PreOpenExp acc env senv aenv a
+    -> Maybe (PreOpenExp acc env senv aenv a)
 commutes h f x = case f of
   PrimAdd _     -> Just (swizzle x)
   PrimMul _     -> Just (swizzle x)
@@ -920,7 +954,7 @@ commutes h f x = case f of
   PrimLOr       -> Just (swizzle x)
   _             -> Nothing
   where
-    swizzle :: PreOpenExp acc env aenv (a',a') -> PreOpenExp acc env aenv (a',a')
+    swizzle :: PreOpenExp acc env senv aenv (a',a') -> PreOpenExp acc env senv aenv (a',a')
     swizzle exp
       | Tuple (NilTup `SnocTup` a `SnocTup` b)  <- exp
       , hashPreOpenExp h a > hashPreOpenExp h b = Tuple (NilTup `SnocTup` b `SnocTup` a)
@@ -943,6 +977,8 @@ hashTupleIdx = hash . tupleIdxToInt
 
 type HashAcc acc = forall aenv a. acc aenv a -> Int
 
+type HashArr arr = forall a. arr a -> Int
+
 
 hashOpenAcc :: OpenAcc aenv arrs -> Int
 hashOpenAcc (OpenAcc pacc) = hashPreOpenAcc hashOpenAcc pacc
@@ -953,13 +989,13 @@ hashPreOpenSeq hashAcc s =
     hashA :: Int -> acc aenv' a -> Int
     hashA salt = hashWithSalt salt . hashAcc
 
-    hashE :: Int -> PreOpenExp acc env' aenv' e -> Int
+    hashE :: Int -> PreOpenExp acc env' aenv' senv' e -> Int
     hashE salt = hashWithSalt salt . hashPreOpenExp hashAcc
 
     hashAF :: Int -> PreOpenAfun acc aenv' f -> Int
     hashAF salt = hashWithSalt salt . hashAfun hashAcc
 
-    hashF :: Int -> PreOpenFun acc env' aenv' f -> Int
+    hashF :: Int -> PreOpenFun acc env' aenv' senv' f -> Int
     hashF salt = hashWithSalt salt . hashPreOpenFun hashAcc
 
     hashS :: Int -> PreOpenSeq acc aenv senv' arrs' -> Int
@@ -971,11 +1007,9 @@ hashPreOpenSeq hashAcc s =
     hashP :: Int -> Producer acc aenv senv a -> Int
     hashP salt p =
       case p of
-        StreamIn arrs       -> unsafePerformIO $! hashStableName `fmap` makeStableName arrs
+        StreamIn sh arrs    -> hash "StreamIn" `hashE` sh `hashWithSalt` (unsafePerformIO $! hashStableName `fmap` makeStableName arrs)
         ToSeq spec _ acc    -> hashWithSalt salt "ToSeq"         `hashA`  acc `hashWithSalt` show spec
-        MapSeq f x          -> hashWithSalt salt "MapSeq"        `hashAF` f   `hashVar` x
-        ChunkedMapSeq f x   -> hashWithSalt salt "ChunkedMapSeq" `hashAF` f   `hashVar` x
-        ZipWithSeq f x y    -> hashWithSalt salt "ZipWithSeq"    `hashAF` f   `hashVar` x `hashVar` y
+        SeqOp op            -> hash "SeqOp" `hashWithSalt` hashPreOpenArrayOp hashAcc idxToInt op
         ScanSeq f e x       -> hashWithSalt salt "ScanSeq"       `hashF`  f   `hashE`   e `hashVar` x
 
     hashC :: Int -> Consumer acc aenv senv' a -> Int
@@ -997,11 +1031,8 @@ hashPreOpenAcc hashAcc pacc =
     hashA :: Int -> acc aenv' a -> Int
     hashA salt = hashWithSalt salt . hashAcc
 
-    hashE :: Int -> PreOpenExp acc env' aenv' e -> Int
+    hashE :: Int -> PreOpenExp acc env' () aenv' e -> Int
     hashE salt = hashWithSalt salt . hashPreOpenExp hashAcc
-
-    hashF :: Int -> PreOpenFun acc env' aenv' f -> Int
-    hashF salt = hashWithSalt salt . hashPreOpenFun hashAcc
 
     hashS :: Int -> PreOpenSeq acc aenv senv arrs -> Int
     hashS salt = hashWithSalt salt . hashPreOpenSeq hashAcc
@@ -1009,16 +1040,33 @@ hashPreOpenAcc hashAcc pacc =
   in case pacc of
     Alet bnd body               -> hash "Alet"          `hashA` bnd `hashA` body
     Avar v                      -> hash "Avar"          `hashWithSalt` hashIdx v
+    Acond e a1 a2               -> hash "Acond"         `hashE` e  `hashA` a1 `hashA` a2
     Atuple t                    -> hash "Atuple"        `hashWithSalt` hashAtuple hashAcc t
     Aprj ix a                   -> hash "Aprj"          `hashWithSalt` hashTupleIdx ix    `hashA` a
     Apply f a                   -> hash "Apply"         `hashWithSalt` hashAfun hashAcc f `hashA` a
     Aforeign _ f a              -> hash "Aforeign"      `hashWithSalt` hashAfun hashAcc f `hashA` a
     Use a                       -> hash "Use"           `hashWithSalt` hashArrays (arrays (undefined::arrs)) a
-    Awhile p f a                -> hash "Awhile"        `hashWithSalt` hashAfun hashAcc f `hashWithSalt` hashAfun hashAcc p `hashA` a
     Unit e                      -> hash "Unit"          `hashE` e
-    Generate e f                -> hash "Generate"      `hashE` e  `hashF` f
-    Acond e a1 a2               -> hash "Acond"         `hashE` e  `hashA` a1 `hashA` a2
     Reshape sh a                -> hash "Reshape"       `hashE` sh `hashA` a
+    Awhile p f a                -> hash "Awhile"        `hashWithSalt` hashAfun hashAcc f `hashWithSalt` hashAfun hashAcc p `hashA` a
+    ArrayOp op                  -> hashPreOpenArrayOp hashAcc hashAcc op
+    Collect s                   -> hash "Seq"           `hashS` s
+
+
+hashPreOpenArrayOp :: forall arr acc senv aenv arrs. HashAcc acc -> HashArr arr -> PreOpenArrayOp arr acc senv aenv arrs -> Int
+hashPreOpenArrayOp hashAcc hashArr op =
+  let
+    hashA :: Int -> arr a -> Int
+    hashA salt = hashWithSalt salt . hashArr
+
+    hashE :: Int -> PreOpenExp acc env' aenv' senv' e -> Int
+    hashE salt = hashWithSalt salt . hashPreOpenExp hashAcc
+
+    hashF :: Int -> PreOpenFun acc env' aenv' senv' f -> Int
+    hashF salt = hashWithSalt salt . hashPreOpenFun hashAcc
+
+  in case op of
+    Generate e f                -> hash "Generate"      `hashE` e  `hashF` f
     Transform sh f1 f2 a        -> hash "Transform"     `hashE` sh `hashF` f1 `hashF` f2 `hashA` a
     Replicate spec ix a         -> hash "Replicate"     `hashE` ix `hashA` a  `hashWithSalt` show spec
     Slice spec a ix             -> hash "Slice"         `hashE` ix `hashA` a  `hashWithSalt` show spec
@@ -1038,8 +1086,6 @@ hashPreOpenAcc hashAcc pacc =
     Permute f1 a1 f2 a2         -> hash "Permute"       `hashF` f1 `hashA` a1 `hashF` f2 `hashA` a2
     Stencil f b a               -> hash "Stencil"       `hashF` f  `hashA` a             `hashWithSalt` hashBoundary a  b
     Stencil2 f b1 a1 b2 a2      -> hash "Stencil2"      `hashF` f  `hashA` a1 `hashA` a2 `hashWithSalt` hashBoundary a1 b1 `hashWithSalt` hashBoundary a2 b2
-    Collect s                   -> hash "Seq"           `hashS` s
-
 
 hashArrays :: ArraysR a -> a -> Int
 hashArrays ArraysRunit         ()       = hash ()
@@ -1054,7 +1100,7 @@ hashAfun :: HashAcc acc -> PreOpenAfun acc aenv f -> Int
 hashAfun h (Abody b)            = hash "Abody"          `hashWithSalt` h b
 hashAfun h (Alam f)             = hash "Alam"           `hashWithSalt` hashAfun h f
 
-hashBoundary :: forall acc aenv sh e. Elt e => acc aenv (Array sh e) -> Boundary (EltRepr e) -> Int
+hashBoundary :: forall f sh e. Elt e => f (Array sh e) -> Boundary (EltRepr e) -> Int
 hashBoundary _ Wrap             = hash "Wrap"
 hashBoundary _ Clamp            = hash "Clamp"
 hashBoundary _ Mirror           = hash "Mirror"
@@ -1064,16 +1110,16 @@ hashBoundary _ (Constant c)     = hash "Constant"       `hashWithSalt` show (toE
 -- Scalar expressions
 -- ------------------
 
-hashOpenExp :: OpenExp env aenv exp -> Int
+hashOpenExp :: OpenExp env senv aenv exp -> Int
 hashOpenExp = hashPreOpenExp hashOpenAcc
 
-hashPreOpenExp :: forall acc env aenv exp. HashAcc acc -> PreOpenExp acc env aenv exp -> Int
+hashPreOpenExp :: forall acc env senv aenv exp. HashAcc acc -> PreOpenExp acc env senv aenv exp -> Int
 hashPreOpenExp hashAcc exp =
   let
     hashA :: Int -> acc aenv' a -> Int
     hashA salt = hashWithSalt salt . hashAcc
 
-    hashE :: Int -> PreOpenExp acc env' aenv' e -> Int
+    hashE :: Int -> PreOpenExp acc env' aenv' senv' e -> Int
     hashE salt = hashWithSalt salt . hashPreOpenExp hashAcc
 
   in case exp of
@@ -1101,14 +1147,17 @@ hashPreOpenExp hashAcc exp =
     ShapeSize sh                -> hash "ShapeSize"     `hashE` sh
     Intersect sa sb             -> hash "Intersect"     `hashE` sa `hashE` sb
     Union sa sb                 -> hash "Union"         `hashE` sa `hashE` sb
+    IndexS x e                  -> hash "IndexS"        `hashWithSalt` hashIdx x `hashE` e
+    LinearIndexS x e            -> hash "LinearIndexS"  `hashWithSalt` hashIdx x `hashE` e
+    ShapeS x                    -> hash "ShapeS"        `hashWithSalt` hashIdx x
     Foreign _ f e               -> hash "Foreign"       `hashWithSalt` hashPreOpenFun hashAcc f `hashE` e
 
 
-hashPreOpenFun :: HashAcc acc -> PreOpenFun acc env aenv f -> Int
-hashPreOpenFun h (Body e)       = hash "Body"           `hashWithSalt` hashPreOpenExp h e
+hashPreOpenFun :: HashAcc acc -> PreOpenFun acc env senv aenv f -> Int
+hashPreOpenFun h (Body e)  = hash "Body"           `hashWithSalt` hashPreOpenExp h e
 hashPreOpenFun h (Lam f)        = hash "Lam"            `hashWithSalt` hashPreOpenFun h f
 
-hashTuple :: HashAcc acc -> Tuple (PreOpenExp acc env aenv) e -> Int
+hashTuple :: HashAcc acc -> Tuple (PreOpenExp acc env senv aenv) e -> Int
 hashTuple _ NilTup              = hash "NilTup"
 hashTuple h (SnocTup t e)       = hash "SnocTup"        `hashWithSalt` hashTuple h t `hashWithSalt` hashPreOpenExp h e
 

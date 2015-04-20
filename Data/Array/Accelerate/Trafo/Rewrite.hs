@@ -1,4 +1,5 @@
 {-# LANGUAGE GADTs               #-}
+{-# LANGUAGE RankNTypes          #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 -- |
 -- Module      : Data.Array.Accelerate.Trafo.Rewrite
@@ -37,22 +38,22 @@ convertSegments = cvtA
     cvtAfun :: OpenAfun aenv t -> OpenAfun aenv t
     cvtAfun = convertSegmentsAfun
 
-    cvtE :: Elt t => Exp aenv t -> Exp aenv t
+    cvtE :: Elt t => Exp senv aenv t -> Exp senv aenv t
     cvtE = id
-
-    cvtF :: Fun aenv t -> Fun aenv t
+    
+    cvtF :: Fun senv aenv t -> Fun senv aenv t
     cvtF = id
 
     a0 :: Arrays a => OpenAcc (aenv, a) a
     a0 = OpenAcc (Avar ZeroIdx)
 
     segments :: (Elt i, IsIntegral i) => OpenAcc aenv (Segments i) -> OpenAcc aenv (Segments i)
-    segments s = OpenAcc $ Scanl plus zero (cvtA s)
+    segments s = OpenAcc $ ArrayOp (Scanl plus zero (cvtA s))
 
-    zero :: forall aenv i. (Elt i, IsIntegral i) => PreOpenExp OpenAcc () aenv i
+    zero :: forall senv aenv i. (Elt i, IsIntegral i) => PreOpenExp OpenAcc () senv aenv i
     zero = Const (fromElt (0::i))
 
-    plus :: (Elt i, IsIntegral i) => PreOpenFun OpenAcc () aenv (i -> i -> i)
+    plus :: (Elt i, IsIntegral i) => PreOpenFun OpenAcc () senv aenv (i -> i -> i)
     plus = Lam (Lam (Body (PrimAdd numType
                           `PrimApp`
                           Tuple (NilTup `SnocTup` Var (SuccIdx ZeroIdx)
@@ -71,6 +72,34 @@ convertSegments = cvtA
       Use a                     -> Use a
       Unit e                    -> Unit (cvtE e)
       Reshape e a               -> Reshape (cvtE e) (cvtA a)
+      Collect s                 -> Collect (convertSegmentsSeq s)
+      -- Things we are interested in, whoo!
+      ArrayOp (FoldSeg f z a s) -> Alet (segments s) (OpenAcc (ArrayOp (FoldSeg (cvtF f') (cvtE z') (cvtA a') a0)))
+        where f' = weaken SuccIdx f
+              z' = weaken SuccIdx z
+              a' = weaken SuccIdx a
+
+      ArrayOp (Fold1Seg f a s)  -> Alet (segments s) (OpenAcc (ArrayOp (Fold1Seg (cvtF f') (cvtA a') a0)))
+        where f' = weaken SuccIdx f
+              a' = weaken SuccIdx a
+
+      ArrayOp op                -> ArrayOp (convertSegmentsArrOp cvtA op)
+
+-- Convert segment length arrays passed to segmented operations into offset
+-- index style. This is achieved by wrapping the segmented array argument in a
+-- left prefix-sum, so you must only ever apply this once.
+--
+convertSegmentsArrOp :: forall arr senv aenv a. (forall a. arr a -> arr a) -> PreOpenArrayOp arr OpenAcc senv aenv a -> PreOpenArrayOp arr OpenAcc senv aenv a
+convertSegmentsArrOp cvtA = cvtOp
+  where
+    cvtE :: Elt t => Exp senv' aenv t -> Exp senv' aenv t
+    cvtE = id
+
+    cvtF :: Fun senv' aenv t -> Fun senv' aenv t
+    cvtF = id
+
+    cvtOp :: PreOpenArrayOp arr OpenAcc senv aenv a -> PreOpenArrayOp arr OpenAcc senv aenv a
+    cvtOp op = case op of
       Generate e f              -> Generate (cvtE e) (cvtF f)
       Transform sh ix f a       -> Transform (cvtE sh) (cvtF ix) (cvtF f) (cvtA a)
       Replicate sl slix a       -> Replicate sl (cvtE slix) (cvtA a)
@@ -89,18 +118,8 @@ convertSegments = cvtA
       Backpermute sh f a        -> Backpermute (cvtE sh) (cvtF f) (cvtA a)
       Stencil f b a             -> Stencil (cvtF f) b (cvtA a)
       Stencil2 f b1 a1 b2 a2    -> Stencil2 (cvtF f) b1 (cvtA a1) b2 (cvtA a2)
-      Collect s                 -> Collect (convertSegmentsSeq s)
-
-      -- Things we are interested in, whoo!
-      FoldSeg f z a s           -> Alet (segments s) (OpenAcc (FoldSeg (cvtF f') (cvtE z') (cvtA a') a0))
-        where f' = weaken SuccIdx f
-              z' = weaken SuccIdx z
-              a' = weaken SuccIdx a
-
-      Fold1Seg f a s            -> Alet (segments s) (OpenAcc (Fold1Seg (cvtF f') (cvtA a') a0))
-        where f' = weaken SuccIdx f
-              a' = weaken SuccIdx a
-
+      FoldSeg f z a s           -> FoldSeg (cvtF f) (cvtE z) (cvtA a) (cvtA s)
+      Fold1Seg f a s            -> Fold1Seg (cvtF f) (cvtA a) (cvtA s)
 
 convertSegmentsAfun :: OpenAfun aenv t -> OpenAfun aenv t
 convertSegmentsAfun afun =
@@ -118,11 +137,9 @@ convertSegmentsSeq seq =
     cvtP :: Producer OpenAcc aenv senv a -> Producer OpenAcc aenv senv a
     cvtP p =
       case p of
-        StreamIn arrs        -> StreamIn arrs
+        StreamIn sh arrs     -> StreamIn (cvtE sh) arrs
         ToSeq sl slix a      -> ToSeq sl slix (cvtA a)
-        MapSeq f x           -> MapSeq (cvtAfun f) x
-        ChunkedMapSeq f x    -> ChunkedMapSeq (cvtAfun f) x
-        ZipWithSeq f x y     -> ZipWithSeq (cvtAfun f) x y
+        SeqOp op             -> SeqOp (convertSegmentsArrOp id op)
         ScanSeq f e x        -> ScanSeq (cvtF f) (cvtE e) x
 
     cvtC :: Consumer OpenAcc aenv senv a -> Consumer OpenAcc aenv senv a
@@ -136,10 +153,10 @@ convertSegmentsSeq seq =
     cvtCT NilAtup        = NilAtup
     cvtCT (SnocAtup t c) = SnocAtup (cvtCT t) (cvtC c)
 
-    cvtE :: Elt t => Exp aenv t -> Exp aenv t
+    cvtE :: Elt t => Exp senv aenv t -> Exp senv aenv t
     cvtE = id
 
-    cvtF :: Fun aenv t -> Fun aenv t
+    cvtF :: Fun senv aenv t -> Fun senv aenv t
     cvtF = id
 
     cvtA :: OpenAcc aenv t -> OpenAcc aenv t

@@ -26,7 +26,7 @@ module Data.Array.Accelerate.Analysis.Type (
   -- * Query AST types
   AccType, arrayType, sizeOf,
   accType, expType, delayedAccType, delayedExpType,
-  preAccType, preExpType
+  preAccType, preExpType, reifyType,
 
 ) where
 
@@ -109,41 +109,42 @@ preAccType k pacc =
     Awhile _ _ acc      -> k acc
     Use a               -> arrayType a
     Unit _              -> eltType (undefined::e)
-    Generate _ _        -> eltType (undefined::e)
-    Transform _ _ _ _   -> eltType (undefined::e)
     Reshape _ acc       -> k acc
-    Replicate _ _ acc   -> k acc
-    Slice _ acc _       -> k acc
-    Map _ _             -> eltType (undefined::e)
-    ZipWith _ _ _       -> eltType (undefined::e)
-    Fold _ _ acc        -> k acc
-    FoldSeg _ _ acc _   -> k acc
-    Fold1 _ acc         -> k acc
-    Fold1Seg _ acc _    -> k acc
-    Scanl _ _ acc       -> k acc
-    Scanl1 _ acc        -> k acc
-    Scanr _ _ acc       -> k acc
-    Scanr1 _ acc        -> k acc
-    Permute _ _ _ acc   -> k acc
-    Backpermute _ _ acc -> k acc
-    Stencil _ _ _       -> eltType (undefined::e)
-    Stencil2 _ _ _ _ _  -> eltType (undefined::e)
-
+    ArrayOp op          ->
+      case op of
+        Generate _ _        -> eltType (undefined::e)
+        Transform _ _ _ _   -> eltType (undefined::e)
+        Replicate _ _ acc   -> k acc
+        Slice _ acc _       -> k acc
+        Map _ _             -> eltType (undefined::e)
+        ZipWith _ _ _       -> eltType (undefined::e)
+        Fold _ _ acc        -> k acc
+        FoldSeg _ _ acc _   -> k acc
+        Fold1 _ acc         -> k acc
+        Fold1Seg _ acc _    -> k acc
+        Scanl _ _ acc       -> k acc
+        Scanl1 _ acc        -> k acc
+        Scanr _ _ acc       -> k acc
+        Scanr1 _ acc        -> k acc
+        Permute _ _ _ acc   -> k acc
+        Backpermute _ _ acc -> k acc
+        Stencil _ _ _       -> eltType (undefined::e)
+        Stencil2 _ _ _ _ _  -> eltType (undefined::e)
 
 -- |Reify the result type of a scalar expression.
 --
-expType :: OpenExp env aenv t -> TupleType (EltRepr t)
+expType :: OpenExp env senv aenv t -> TupleType (EltRepr t)
 expType = preExpType accType
 
-delayedExpType :: DelayedOpenExp env aenv t -> TupleType (EltRepr t)
+delayedExpType :: DelayedOpenExp env senv aenv t -> TupleType (EltRepr t)
 delayedExpType = preExpType delayedAccType
 
 -- |Reify the result types of of a scalar expression using the expression AST before tying the
 -- knot.
 --
-preExpType :: forall acc aenv env t.
+preExpType :: forall acc senv aenv env t.
               AccType acc
-           -> PreOpenExp acc aenv env t
+           -> PreOpenExp acc env senv aenv t
            -> TupleType (EltRepr t)
 preExpType k e =
   case e of
@@ -171,6 +172,9 @@ preExpType k e =
     ShapeSize _       -> eltType (undefined::t)
     Intersect _ _     -> eltType (undefined::t)
     Union _ _         -> eltType (undefined::t)
+    IndexS       (_ :: Idx senv (Array sh e)) _  -> eltType (undefined::e)
+    LinearIndexS (_ :: Idx senv (Array sh e)) _  -> eltType (undefined::e)
+    ShapeS       (_ :: Idx senv (Array sh e))    -> eltType (undefined::sh)
     Foreign _ _ _     -> eltType (undefined::t)
 
 
@@ -187,3 +191,5 @@ sizeOf (SingleTuple (NumScalarType (FloatingNumType t)))
 sizeOf (SingleTuple (NonNumScalarType t))
   | NonNumDict   <- nonNumDict t   = F.sizeOf $ (undefined :: NonNumType a   -> a) t
 
+reifyType :: forall f sh e. Elt e => f (Array sh e) -> TupleType (EltRepr e)
+reifyType _ = eltType (undefined :: e)

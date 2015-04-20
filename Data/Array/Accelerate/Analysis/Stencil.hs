@@ -24,14 +24,14 @@ import Data.Array.Accelerate.Array.Sugar
 -- bottom-left element to the top-right. This ordering matches the Var indexing
 -- order.
 --
-offsets :: forall a b sh aenv stencil. Stencil sh a stencil
-        => {- dummy -} Fun aenv (stencil -> b)
+offsets :: forall a b sh aenv senv stencil. Stencil sh a stencil
+        => {- dummy -} Fun senv aenv (stencil -> b)
         -> {- dummy -} OpenAcc aenv (Array sh a)
         -> [sh]
 offsets _ _ = positionsR (stencil :: StencilR sh a stencil)
 
-offsets2 :: forall a b c sh aenv stencil1 stencil2. (Stencil sh a stencil1, Stencil sh b stencil2)
-         => {- dummy -} Fun aenv (stencil1 -> stencil2 -> c)
+offsets2 :: forall a b c sh aenv senv stencil1 stencil2. (Stencil sh a stencil1, Stencil sh b stencil2)
+         => {- dummy -} Fun senv aenv (stencil1 -> stencil2 -> c)
          -> {- dummy -} OpenAcc aenv (Array sh a)
          -> {- dummy -} OpenAcc aenv (Array sh b)
          -> ([sh], [sh])

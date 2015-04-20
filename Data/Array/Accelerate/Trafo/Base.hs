@@ -106,10 +106,10 @@ class Match f where
 instance Match (Idx env) where
   match = matchIdx
 
-instance Kit acc => Match (PreOpenExp acc env aenv) where
+instance Kit acc => Match (PreOpenExp acc env senv aenv) where
   match = matchPreOpenExp matchAcc hashAcc
 
-instance Kit acc => Match (PreOpenFun acc env aenv) where
+instance Kit acc => Match (PreOpenFun acc env senv aenv) where
   match = matchPreOpenFun matchAcc hashAcc
 
 instance Kit acc => Match (PreOpenAcc acc aenv) where
@@ -144,9 +144,9 @@ data DelayedOpenAcc aenv a where
   Manifest              :: PreOpenAcc DelayedOpenAcc aenv a -> DelayedOpenAcc aenv a
 
   Delayed               :: (Shape sh, Elt e) =>
-    { extentD           :: PreExp DelayedOpenAcc aenv sh
-    , indexD            :: PreFun DelayedOpenAcc aenv (sh  -> e)
-    , linearIndexD      :: PreFun DelayedOpenAcc aenv (Int -> e)
+    { extentD           :: PreExp DelayedOpenAcc () aenv sh
+    , indexD            :: PreFun DelayedOpenAcc () aenv (sh  -> e)
+    , linearIndexD      :: PreFun DelayedOpenAcc () aenv (Int -> e)
     }                   -> DelayedOpenAcc aenv (Array sh e)
 
 instance Rebuildable DelayedOpenAcc where
@@ -236,31 +236,31 @@ prettyDelayedSeq wrap (DelayedSeq env s)
 -- environment variable env' is used to project out the corresponding
 -- index when looking up in the environment congruent expressions.
 --
-data Gamma acc env env' aenv where
-  EmptyExp :: Gamma      acc env env'      aenv
+data Gamma acc env env' senv aenv where
+  EmptyExp :: Gamma      acc env env'      senv aenv
 
-  PushExp  :: Gamma      acc env env'      aenv
-           -> PreOpenExp acc env           aenv t
-           -> Gamma      acc env (env', t) aenv
+  PushExp  :: Gamma      acc env env'      senv aenv
+           -> PreOpenExp acc env           senv aenv t
+           -> Gamma      acc env (env', t) senv aenv
 
-incExp :: RebuildableAcc acc => Gamma acc env env' aenv -> Gamma acc (env, s) env' aenv
+incExp :: RebuildableAcc acc => Gamma acc env env' senv aenv -> Gamma acc (env, s) env' senv aenv
 incExp EmptyExp        = EmptyExp
 incExp (PushExp env e) = incExp env `PushExp` weakenE SuccIdx e
 
-prjExp :: Idx env' t -> Gamma acc env env' aenv -> PreOpenExp acc env aenv t
+prjExp :: Idx env' t -> Gamma acc env env' senv aenv -> PreOpenExp acc env senv aenv t
 prjExp ZeroIdx      (PushExp _   v) = v
 prjExp (SuccIdx ix) (PushExp env _) = prjExp ix env
 prjExp _            _               = $internalError "prjExp" "inconsistent valuation"
 
-weakenGamma1 :: Kit acc => Gamma acc env env' aenv -> Gamma acc env env' (aenv,t)
+weakenGamma1 :: Kit acc => Gamma acc env env' senv aenv -> Gamma acc env env' senv (aenv,t)
 weakenGamma1 EmptyExp        = EmptyExp
 weakenGamma1 (PushExp env e) = PushExp (weakenGamma1 env) (weaken SuccIdx e)
 
-sinkGamma :: Kit acc => Extend acc aenv aenv' -> Gamma acc env env' aenv -> Gamma acc env env' aenv'
+sinkGamma :: Kit acc => Extend acc aenv aenv' -> Gamma acc env env' senv aenv -> Gamma acc env env' senv aenv'
 sinkGamma _   EmptyExp        = EmptyExp
 sinkGamma ext (PushExp env e) = PushExp (sinkGamma ext env) (sink ext e)
 
-lookupExp :: Kit acc => Gamma acc env env' aenv -> PreOpenExp acc env aenv t -> Maybe (Idx env' t)
+lookupExp :: Kit acc => Gamma acc env env' senv aenv -> PreOpenExp acc env senv aenv t -> Maybe (Idx env' t)
 lookupExp EmptyExp        _ = Nothing
 lookupExp (PushExp env e) x
   | Just REFL <- match e x  = Just ZeroIdx
@@ -327,13 +327,13 @@ data Supplement acc env env' aenv where
   BaseSup :: Supplement acc env env aenv
   PushSup :: Elt e
           => Supplement acc env env' aenv
-          -> PreOpenExp acc env' aenv e
+          -> PreOpenExp acc env' () aenv e
           -> Supplement acc env (env', e) aenv
 
 bindExps :: (Kit acc, Elt e)
          => Supplement acc env env' aenv
-         -> PreOpenExp acc env' aenv e
-         -> PreOpenExp acc env aenv e
+         -> PreOpenExp acc env' () aenv e
+         -> PreOpenExp acc env () aenv e
 bindExps BaseSup       = id
 bindExps (PushSup g b) = bindExps g . Let b
 

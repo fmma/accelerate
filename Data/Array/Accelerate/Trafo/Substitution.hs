@@ -33,7 +33,10 @@ module Data.Array.Accelerate.Trafo.Substitution (
 
   -- ** Rebuilding terms
   RebuildAcc, Rebuildable(..), RebuildableAcc,
-  RebuildableExp(..), RebuildTup(..)
+  RebuildableExp(..), RebuildTup(..),
+  
+  -- ** Inclusion from closed into open sequence enviroment for expressions.
+  sinkSenvExp,
 
 ) where
 
@@ -77,25 +80,25 @@ infixr `substitute`
 -- shrinks.
 --
 inline :: (RebuildableAcc acc, Elt t)
-       => PreOpenExp acc (env, s) aenv t
-       -> PreOpenExp acc env      aenv s
-       -> PreOpenExp acc env      aenv t
+       => PreOpenExp acc (env, s) senv aenv t
+       -> PreOpenExp acc env      senv aenv s
+       -> PreOpenExp acc env      senv aenv t
 inline f g = Stats.substitution "inline" $ rebuildE (subTop g) f
 
 -- | Replace an expression that uses the top environment variable with another.
 -- The result of the first is let bound into the second.
 --
 substitute :: (RebuildableAcc acc, Elt b, Elt c)
-           => PreOpenExp acc (env, b) aenv c
-           -> PreOpenExp acc (env, a) aenv b
-           -> PreOpenExp acc (env, a) aenv c
+           => PreOpenExp acc (env, b) senv aenv c
+           -> PreOpenExp acc (env, a) senv aenv b
+           -> PreOpenExp acc (env, a) senv aenv c
 substitute f g
   | Stats.substitution "substitute" False = undefined
 
   | Var ZeroIdx <- g    = f     -- don't rebind an identity function
   | otherwise           = Let g $ rebuildE split f
   where
-    split :: Elt c => Idx (env,b) c -> PreOpenExp acc ((env,a),b) aenv c
+    split :: Elt c => Idx (env,b) c -> PreOpenExp acc ((env,a),b) senv aenv c
     split ZeroIdx       = Var ZeroIdx
     split (SuccIdx ix)  = Var (SuccIdx (SuccIdx ix))
 
@@ -103,13 +106,13 @@ substitute f g
 -- | Composition of unary functions.
 --
 compose :: (RebuildableAcc acc, Elt c)
-        => PreOpenFun acc env aenv (b -> c)
-        -> PreOpenFun acc env aenv (a -> b)
-        -> PreOpenFun acc env aenv (a -> c)
+        => PreOpenFun acc env senv aenv (b -> c)
+        -> PreOpenFun acc env senv aenv (a -> b)
+        -> PreOpenFun acc env senv aenv (a -> c)
 compose (Lam (Body f)) (Lam (Body g)) = Stats.substitution "compose" . Lam . Body $ substitute f g
 compose _              _              = error "compose: impossible evaluation"
 
-subTop :: Elt t => PreOpenExp acc env aenv s -> Idx (env, s) t -> PreOpenExp acc env aenv t
+subTop :: Elt t => PreOpenExp acc env senv aenv s -> Idx (env, s) t -> PreOpenExp acc env senv aenv t
 subTop s ZeroIdx      = s
 subTop _ (SuccIdx ix) = Var ix
 
@@ -152,14 +155,14 @@ class Rebuildable f where
 class RebuildableExp f where
 
   rebuildPartialE :: (Applicative f', SyntacticExp fe)
-                  => (forall e'. Elt e' => Idx env e' -> f' (fe (AccClo (f env)) env' aenv e'))
-                  -> f env aenv  e
-                  -> f' (f env' aenv e)
+                  => (forall e'. Elt e' => Idx env e' -> f' (fe (AccClo (f env senv)) env' senv aenv e'))
+                  -> f env senv aenv e
+                  -> f' (f env' senv aenv e)
 
   rebuildE :: SyntacticExp fe
-           => (forall e'. Elt e' => Idx env e' -> fe (AccClo (f env)) env' aenv e')
-           -> f env aenv  e
-           -> f env' aenv e
+           => (forall e'. Elt e' => Idx env e' -> fe (AccClo (f env senv)) env' senv aenv e')
+           -> f env senv aenv  e
+           -> f env' senv aenv e
   rebuildE v = runIdentity . rebuildPartialE (Identity . v)
 
 -- Terms that are rebuildable and also recursive closures
@@ -168,12 +171,12 @@ type RebuildableAcc acc = (Rebuildable acc, AccClo acc ~ acc)
 
 -- We can use the same plumbing to rebuildPartial all the things we want to rebuild.
 --
-instance RebuildableAcc acc => Rebuildable (PreOpenExp acc env) where
-  type AccClo (PreOpenExp acc env) = acc
+instance RebuildableAcc acc => Rebuildable (PreOpenExp acc env senv) where
+  type AccClo (PreOpenExp acc env senv) = acc
   rebuildPartial = rebuildPreOpenExp rebuildPartial (pure . IE)
 
-instance RebuildableAcc acc => Rebuildable (PreOpenFun acc env) where
-  type AccClo (PreOpenFun acc env) = acc
+instance RebuildableAcc acc => Rebuildable (PreOpenFun acc env senv) where
+  type AccClo (PreOpenFun acc env senv) = acc
   rebuildPartial = rebuildFun rebuildPartial (pure . IE)
 
 instance RebuildableAcc acc => Rebuildable (PreOpenAcc acc) where
@@ -184,11 +187,15 @@ instance RebuildableAcc acc => Rebuildable (PreOpenAfun acc) where
   type AccClo (PreOpenAfun acc) = acc
   rebuildPartial = rebuildAfun rebuildPartial
 
--- Tuples have to be handled specially.
-newtype RebuildTup acc env aenv t = RebuildTup { unRTup :: Tuple (PreOpenExp acc env aenv) t }
+instance RebuildableAcc acc => Rebuildable (PreOpenArrayOp arr acc senv) where
+  type AccClo (PreOpenArrayOp arr acc senv) = acc
+  rebuildPartial = rebuildPreOpenArrayOp pure rebuildPartial
 
-instance RebuildableAcc acc => Rebuildable (RebuildTup acc env) where
-  type AccClo (RebuildTup acc env) = acc
+-- Tuples have to be handled specially.
+newtype RebuildTup acc env senv aenv t = RebuildTup { unRTup :: Tuple (PreOpenExp acc env senv aenv) t }
+
+instance RebuildableAcc acc => Rebuildable (RebuildTup acc env senv) where
+  type AccClo (RebuildTup acc env senv) = acc
   rebuildPartial v t = RebuildTup <$> rebuildTup rebuildPartial (pure . IE) v (unRTup t)
 
 instance Rebuildable OpenAcc where
@@ -231,10 +238,11 @@ instance Sink Idx where
 --  weaken k = Stats.substitution "weaken" . rebuildA (Avar . k)
 
 instance RebuildableAcc acc => Sink (PreOpenAcc acc) where
+instance RebuildableAcc acc => Sink (PreOpenArrayOp arr acc senv) where
 instance RebuildableAcc acc => Sink (PreOpenAfun acc) where
-instance RebuildableAcc acc => Sink (PreOpenExp acc env) where
-instance RebuildableAcc acc => Sink (PreOpenFun acc env) where
-instance RebuildableAcc acc => Sink (RebuildTup acc env) where
+instance RebuildableAcc acc => Sink (PreOpenExp acc env senv) where
+instance RebuildableAcc acc => Sink (PreOpenFun acc env senv) where
+instance RebuildableAcc acc => Sink (RebuildTup acc env senv) where
 instance Sink OpenAcc where
 
 -- This rewrite rule is disabled because 'weaken' is now part of a type class.
@@ -245,8 +253,8 @@ instance Sink OpenAcc where
 --  #-}
 
 class SinkExp f where
-  weakenE :: env :> env' -> f env aenv t -> f env' aenv t
-  default weakenE :: RebuildableExp f => env :> env' -> f env aenv t -> f env' aenv t
+  weakenE :: env :> env' -> f env senv aenv t -> f env' senv aenv t
+  default weakenE :: RebuildableExp f => env :> env' -> f env senv aenv t -> f env' senv aenv t
   weakenE v = Stats.substitution "weakenE" . rebuildE (IE . v)
 
 instance RebuildableAcc acc => SinkExp (PreOpenExp acc) where
@@ -272,7 +280,7 @@ type env :?> env' = forall t'. Idx env t' -> Maybe (Idx env' t')
 strengthen :: Rebuildable f => env :?> env' -> f env t -> Maybe (f env' t)
 strengthen k = rebuildPartial (fmap IA . k)
 
-strengthenE :: RebuildableExp f => env :?> env' -> f env aenv t -> Maybe (f env' aenv t)
+strengthenE :: RebuildableExp f => env :?> env' -> f env senv aenv t -> Maybe (f env' senv aenv t)
 strengthenE k = rebuildPartialE (fmap IE . k)
 
 -- Simultaneous Substitution ===================================================
@@ -285,12 +293,12 @@ strengthenE k = rebuildPartialE (fmap IE . k)
 -- SEE: [Weakening]
 --
 class SyntacticExp f where
-  varIn         :: Elt t => Idx env t        -> f acc env aenv t
-  expOut        :: Elt t => f acc env aenv t -> PreOpenExp acc env aenv t
-  weakenExp     :: Elt t => RebuildAcc acc -> f acc env aenv t -> f acc (env, s) aenv t
-  weakenExpAcc  :: Elt t => RebuildAcc acc -> f acc env aenv t -> f acc env (aenv, s) t
+  varIn         :: Elt t => Idx env t        -> f acc env senv aenv t
+  expOut        :: Elt t => f acc env senv aenv t -> PreOpenExp acc env senv aenv t
+  weakenExp     :: Elt t => RebuildAcc acc -> f acc env senv aenv t -> f acc (env, s) senv aenv t
+  weakenExpAcc  :: Elt t => RebuildAcc acc -> f acc env senv aenv t -> f acc env senv (aenv, s) t
 
-newtype IdxE (acc :: * -> * -> *) env aenv t = IE { unIE :: Idx env t }
+newtype IdxE (acc :: * -> * -> *) env senv aenv t = IE { unIE :: Idx env t }
 
 instance SyntacticExp IdxE where
   varIn         = IE
@@ -307,19 +315,19 @@ instance SyntacticExp PreOpenExp where
 shiftE
     :: (Applicative f, SyntacticExp fe, Elt t)
     => RebuildAcc acc
-    -> (forall t'. Elt t' => Idx env t' -> f (fe acc env' aenv t'))
+    -> (forall t'. Elt t' => Idx env t' -> f (fe acc env' senv aenv t'))
     -> Idx     (env,  s)      t
-    -> f (fe  acc (env', s) aenv t)
+    -> f (fe  acc (env', s) senv aenv t)
 shiftE _ _ ZeroIdx      = pure $ varIn ZeroIdx
 shiftE k v (SuccIdx ix) = weakenExp k <$> (v ix)
 
 rebuildPreOpenExp
     :: (Applicative f, SyntacticExp fe, SyntacticAcc fa)
     => RebuildAcc acc
-    -> (forall t'. Elt t'    => Idx env t'  -> f (fe acc env' aenv' t'))
+    -> (forall t'. Elt t'    => Idx env t'  -> f (fe acc env' senv aenv' t'))
     -> (forall t'. Arrays t' => Idx aenv t' -> f (fa acc aenv' t'))
-    -> PreOpenExp acc env  aenv t
-    -> f (PreOpenExp acc env' aenv' t)
+    -> PreOpenExp acc env senv aenv t
+    -> f (PreOpenExp acc env' senv aenv' t)
 rebuildPreOpenExp k v av exp =
   case exp of
     Let a b             -> Let <$> rebuildPreOpenExp k v av a <*> rebuildPreOpenExp k (shiftE k v) av b
@@ -346,15 +354,18 @@ rebuildPreOpenExp k v av exp =
     ShapeSize sh        -> ShapeSize <$> rebuildPreOpenExp k v av sh
     Intersect s t       -> Intersect <$> rebuildPreOpenExp k v av s <*> rebuildPreOpenExp k v av t
     Union s t           -> Union <$> rebuildPreOpenExp k v av s <*> rebuildPreOpenExp k v av t
+    IndexS x sh         -> IndexS x <$> rebuildPreOpenExp k v av sh
+    LinearIndexS x i    -> LinearIndexS x <$> rebuildPreOpenExp k v av i
+    ShapeS x            -> pure $ ShapeS x
     Foreign ff f e      -> Foreign ff f <$> rebuildPreOpenExp k v av e
 
 rebuildTup
     :: (Applicative f, SyntacticExp fe, SyntacticAcc fa)
     => RebuildAcc acc
-    -> (forall t'. Elt t'    => Idx env t'  -> f (fe acc env' aenv' t'))
+    -> (forall t'. Elt t'    => Idx env t'  -> f (fe acc env' senv aenv' t'))
     -> (forall t'. Arrays t' => Idx aenv t' -> f (fa acc aenv' t'))
-    -> Tuple (PreOpenExp acc env  aenv)  t
-    -> f (Tuple (PreOpenExp acc env' aenv') t)
+    -> Tuple (PreOpenExp acc env senv aenv)  t
+    -> f (Tuple (PreOpenExp acc env' senv aenv') t)
 rebuildTup k v av tup =
   case tup of
     NilTup      -> pure NilTup
@@ -363,10 +374,10 @@ rebuildTup k v av tup =
 rebuildFun
     :: (Applicative f, SyntacticExp fe, SyntacticAcc fa)
     => RebuildAcc acc
-    -> (forall t'. Elt t'    => Idx env t'  -> f (fe acc env' aenv' t'))
+    -> (forall t'. Elt t'    => Idx env t'  -> f (fe acc env' senv aenv' t'))
     -> (forall t'. Arrays t' => Idx aenv t' -> f (fa acc aenv' t'))
-    -> PreOpenFun acc env  aenv  t
-    -> f (PreOpenFun acc env' aenv' t)
+    -> PreOpenFun acc env senv aenv  t
+    -> f (PreOpenFun acc env' senv aenv' t)
 rebuildFun k v av fun =
   case fun of
     Body e      -> Body <$> rebuildPreOpenExp k v av e
@@ -426,28 +437,39 @@ rebuildPreOpenAcc k av acc =
     Use a               -> pure $ Use a
     Unit e              -> Unit <$> rebuildPreOpenExp k (pure . IE) av e
     Reshape e a         -> Reshape <$> rebuildPreOpenExp k (pure . IE) av e <*> k av a
-    Generate e f        -> Generate <$> rebuildPreOpenExp k (pure . IE) av e <*> rebuildFun k (pure . IE) av f
-    Transform sh ix f a -> Transform <$> rebuildPreOpenExp k (pure . IE) av sh <*> rebuildFun k (pure . IE) av ix <*> rebuildFun k (pure . IE) av f <*> k av a
-    Replicate sl slix a -> Replicate sl <$> rebuildPreOpenExp k (pure . IE) av slix <*> k av a
-    Slice sl a slix     -> Slice sl <$> k av a <*> rebuildPreOpenExp k (pure . IE) av slix
-    Map f a             -> Map <$> rebuildFun k (pure . IE) av f <*> k av a
-    ZipWith f a1 a2     -> ZipWith <$> rebuildFun k (pure . IE) av f <*> k av a1 <*> k av a2
-    Fold f z a          -> Fold <$> rebuildFun k (pure . IE) av f <*> rebuildPreOpenExp k (pure . IE) av z <*> k av a
-    Fold1 f a           -> Fold1 <$> rebuildFun k (pure . IE) av f <*> k av a
-    FoldSeg f z a s     -> FoldSeg <$> rebuildFun k (pure . IE) av f <*> rebuildPreOpenExp k (pure . IE) av z <*> k av a <*> k av s
-    Fold1Seg f a s      -> Fold1Seg <$> rebuildFun k (pure . IE) av f <*> k av a <*> k av s
-    Scanl f z a         -> Scanl <$> rebuildFun k (pure . IE) av f <*> rebuildPreOpenExp k (pure . IE) av z <*> k av a
-    Scanl' f z a        -> Scanl' <$> rebuildFun k (pure . IE) av f <*> rebuildPreOpenExp k (pure . IE) av z <*> k av a
-    Scanl1 f a          -> Scanl1 <$> rebuildFun k (pure . IE) av f <*> k av a
-    Scanr f z a         -> Scanr <$> rebuildFun k (pure . IE) av f <*> rebuildPreOpenExp k (pure . IE) av z <*> k av a
-    Scanr' f z a        -> Scanr' <$> rebuildFun k (pure . IE) av f <*> rebuildPreOpenExp k (pure . IE) av z <*> k av a
-    Scanr1 f a          -> Scanr1 <$> rebuildFun k (pure . IE) av f <*> k av a
-    Permute f1 a1 f2 a2 -> Permute <$> rebuildFun k (pure . IE) av f1 <*> k av a1 <*> rebuildFun k (pure . IE) av f2 <*> k av a2
-    Backpermute sh f a  -> Backpermute <$> rebuildPreOpenExp k (pure . IE) av sh <*> rebuildFun k (pure . IE) av f <*> k av a
-    Stencil f b a       -> Stencil <$> rebuildFun k (pure . IE) av f <*> pure b <*> k av a
-    Stencil2 f b1 a1 b2 a2
-                        -> Stencil2 <$> rebuildFun k (pure . IE) av f <*> pure b1 <*> k av a1 <*> pure b2 <*> k av a2
+    ArrayOp op          -> ArrayOp <$> rebuildPreOpenArrayOp (k av) k av op
     Collect seq         -> Collect <$> rebuildSeq k av seq
+
+rebuildPreOpenArrayOp
+    :: (Applicative f, SyntacticAcc fa)
+    => (forall a0. Arrays a0 => arr a0 -> f (arr' a0))
+    -> RebuildAcc acc
+    -> (forall t'. Arrays t' => Idx aenv t' -> f (fa acc aenv' t'))
+    -> PreOpenArrayOp arr acc senv aenv t
+    -> f (PreOpenArrayOp arr' acc senv aenv' t)
+rebuildPreOpenArrayOp ra k av op =
+  case op of
+    Generate e f        -> Generate <$> rebuildPreOpenExp k (pure . IE) av e <*> rebuildFun k (pure . IE) av f
+    Transform sh ix f a -> Transform <$> rebuildPreOpenExp k (pure . IE) av sh <*> rebuildFun k (pure . IE) av ix <*> rebuildFun k (pure . IE) av f <*> ra a
+    Replicate sl slix a -> Replicate sl <$> rebuildPreOpenExp k (pure . IE) av slix <*> ra a
+    Slice sl a slix     -> Slice sl <$> ra a <*> rebuildPreOpenExp k (pure . IE) av slix
+    Map f a             -> Map <$> rebuildFun k (pure . IE) av f <*> ra a
+    ZipWith f a1 a2     -> ZipWith <$> rebuildFun k (pure . IE) av f <*> ra a1 <*> ra a2
+    Fold f z a          -> Fold <$> rebuildFun k (pure . IE) av f <*> rebuildPreOpenExp k (pure . IE) av z <*> ra a
+    Fold1 f a           -> Fold1 <$> rebuildFun k (pure . IE) av f <*> ra a
+    FoldSeg f z a s     -> FoldSeg <$> rebuildFun k (pure . IE) av f <*> rebuildPreOpenExp k (pure . IE) av z <*> ra a <*> ra s
+    Fold1Seg f a s      -> Fold1Seg <$> rebuildFun k (pure . IE) av f <*> ra a <*> ra s
+    Scanl f z a         -> Scanl <$> rebuildFun k (pure . IE) av f <*> rebuildPreOpenExp k (pure . IE) av z <*> ra a
+    Scanl' f z a        -> Scanl' <$> rebuildFun k (pure . IE) av f <*> rebuildPreOpenExp k (pure . IE) av z <*> ra a
+    Scanl1 f a          -> Scanl1 <$> rebuildFun k (pure . IE) av f <*> ra a
+    Scanr f z a         -> Scanr <$> rebuildFun k (pure . IE) av f <*> rebuildPreOpenExp k (pure . IE) av z <*> ra a
+    Scanr' f z a        -> Scanr' <$> rebuildFun k (pure . IE) av f <*> rebuildPreOpenExp k (pure . IE) av z <*> ra a
+    Scanr1 f a          -> Scanr1 <$> rebuildFun k (pure . IE) av f <*> ra a
+    Permute f1 a1 f2 a2 -> Permute <$> rebuildFun k (pure . IE) av f1 <*> ra a1 <*> rebuildFun k (pure . IE) av f2 <*> ra a2
+    Backpermute sh f a  -> Backpermute <$> rebuildPreOpenExp k (pure . IE) av sh <*> rebuildFun k (pure . IE) av f <*> ra a
+    Stencil f b a       -> Stencil <$> rebuildFun k (pure . IE) av f <*> pure b <*> ra a
+    Stencil2 f b1 a1 b2 a2
+                        -> Stencil2 <$> rebuildFun k (pure . IE) av f <*> pure b1 <*> ra a1 <*> pure b2 <*> ra a2
 
 rebuildAfun
     :: (Applicative f, SyntacticAcc fa)
@@ -490,11 +512,9 @@ rebuildP :: (SyntacticAcc fa, Applicative f)
          -> f (Producer acc aenv' senv a)
 rebuildP k v p =
   case p of
-    StreamIn arrs        -> pure (StreamIn arrs)
+    StreamIn sh arrs     -> StreamIn <$> rebuildPreOpenExp k (pure . IE) v sh <*> pure arrs
     ToSeq sl slix acc    -> ToSeq sl slix <$> k v acc
-    MapSeq f x           -> MapSeq <$> rebuildAfun k v f <*> pure x
-    ChunkedMapSeq f x    -> ChunkedMapSeq <$> rebuildAfun k v f <*> pure x
-    ZipWithSeq f x y     -> ZipWithSeq <$> rebuildAfun k v f <*> pure x <*> pure y
+    SeqOp op             -> SeqOp <$> rebuildPreOpenArrayOp pure k v op
     ScanSeq f e x        -> ScanSeq <$> rebuildFun k (pure . IE) v f <*> rebuildPreOpenExp k (pure . IE) v e <*> pure x
 
 rebuildC :: forall acc fa f aenv aenv' senv a. (SyntacticAcc fa, Applicative f)
@@ -521,3 +541,49 @@ rebuildOpenAcc
     -> f (OpenAcc aenv' t)
 rebuildOpenAcc av (OpenAcc acc) = OpenAcc <$> rebuildPreOpenAcc rebuildOpenAcc av acc
 
+-- Inclusion of closed (with respect to the sequence env.) expression
+-- into open expressions.
+sinkSenvExp :: PreOpenExp acc env () aenv a -> PreOpenExp acc env senv aenv a
+sinkSenvExp exp =
+  case exp of
+    Let bnd body            -> Let (cvtE bnd) (cvtE body)
+    Var ix                  -> Var ix
+    Const c                 -> Const c
+    Tuple tup               -> Tuple (cvtT tup)
+    Prj ix t                -> Prj ix (cvtE t)
+    IndexNil                -> IndexNil
+    IndexCons sh sz         -> IndexCons (cvtE sh) (cvtE sz)
+    IndexHead sh            -> IndexHead (cvtE sh)
+    IndexTail sh            -> IndexTail (cvtE sh)
+    IndexAny                -> IndexAny
+    IndexSlice x ix sh      -> IndexSlice x (cvtE ix) (cvtE sh)
+    IndexFull x ix sl       -> IndexFull x (cvtE ix) (cvtE sl)
+    ToIndex sh ix           -> ToIndex (cvtE sh) (cvtE ix)
+    FromIndex sh ix         -> FromIndex (cvtE sh) (cvtE ix)
+    Cond p t e              -> Cond (cvtE p) (cvtE t) (cvtE e)
+    While p f x             -> While (cvtF p) (cvtF f) (cvtE x)
+    PrimConst c             -> PrimConst c
+    PrimApp f x             -> PrimApp f (cvtE x)
+    Index a sh              -> Index a (cvtE sh)
+    LinearIndex a i         -> LinearIndex a (cvtE i)
+    Shape a                 -> Shape a
+    ShapeSize sh            -> ShapeSize (cvtE sh)
+    Intersect s t           -> Intersect (cvtE s) (cvtE t)
+    Union s t               -> Union (cvtE s) (cvtE t)
+    IndexS _ _              -> error "Absurdum: No inhabitants of the type 'Idx () t'"
+    LinearIndexS _ _        -> error "Absurdum: No inhabitants of the type 'Idx () t'"
+    ShapeS _                -> error "Absurdum: No inhabitants of the type 'Idx () t'"
+    Foreign ff f e          -> Foreign ff (cvtF f) (cvtE e)
+  where
+    cvtT :: Tuple (PreOpenExp acc env () aenv) t -> Tuple (PreOpenExp acc env senv aenv) t
+    cvtT NilTup        = NilTup
+    cvtT (SnocTup t e) = cvtT t `SnocTup` cvtE e
+
+    -- Conversions for closed scalar functions and expressions
+    --
+    cvtF :: PreOpenFun acc env () aenv f -> PreOpenFun acc env senv aenv f
+    cvtF (Lam f)  = Lam (cvtF f)
+    cvtF (Body b) = Body (cvtE b)
+
+    cvtE :: PreOpenExp acc env () aenv t -> PreOpenExp acc env senv aenv t
+    cvtE = sinkSenvExp

@@ -52,13 +52,14 @@ import Control.Monad
 import Data.Bits
 import Data.Char                                        ( chr, ord )
 import Prelude                                          hiding ( sum )
+import System.IO.Unsafe                                 ( unsafePerformIO )
 
 -- friends
 import Data.Array.Accelerate.AST
 import Data.Array.Accelerate.Array.Data
-import Data.Array.Accelerate.Array.Lifted
 import Data.Array.Accelerate.Array.Representation               ( SliceIndex(..) )
 import Data.Array.Accelerate.Array.Sugar
+import Data.Array.Accelerate.Debug                              ( queryFlag, chunk_size )
 import Data.Array.Accelerate.Error
 import Data.Array.Accelerate.Trafo                              hiding ( Delayed )
 import Data.Array.Accelerate.Product
@@ -103,7 +104,7 @@ config =  Phase
   , floatOutAccFromExp     = True
   , enableAccFusion        = True
   , convertOffsetOfSegment = False
-  , vectoriseSequences     = True
+--  , vectoriseSequences     = True
   }
 
 
@@ -120,7 +121,6 @@ data Delayed a where
           -> (sh -> e)
           -> (Int -> e)
           -> Delayed (Array sh e)
-
 
 -- Array expression evaluation
 -- ---------------------------
@@ -151,11 +151,39 @@ evalOpenAcc (AST.Manifest pacc) aenv =
       delayed AST.Manifest{}  = $internalError "evalOpenAcc" "expected delayed array"
       delayed AST.Delayed{..} = Delayed (evalE extentD) (evalF indexD) (evalF linearIndexD)
 
-      evalE :: DelayedExp aenv t -> t
-      evalE exp = evalPreExp evalOpenAcc exp aenv
+      evalE :: DelayedExp () aenv t -> t
+      evalE exp = evalPreExp evalOpenAcc exp aenv (EmptyS, 0)
 
-      evalF :: DelayedFun aenv f -> f
-      evalF fun = evalPreFun evalOpenAcc fun aenv
+      evalF :: DelayedFun () aenv f -> f
+      evalF fun = evalPreFun evalOpenAcc fun aenv (EmptyS, 0)
+
+      evalOp :: PreOpenArrayOp (DelayedOpenAcc aenv) DelayedOpenAcc () aenv a -> a
+      evalOp op = case op of        
+        -- Producers
+        -- ---------
+        Map f acc                   -> mapOp (evalF f) (delayed acc)
+        Generate sh f               -> generateOp (evalE sh) (evalF f)
+        Transform sh p f acc        -> transformOp (evalE sh) (evalF p) (evalF f) (delayed acc)
+        Backpermute sh p acc        -> backpermuteOp (evalE sh) (evalF p) (delayed acc)
+        ZipWith f acc1 acc2         -> zipWithOp (evalF f) (delayed acc1) (delayed acc2)
+        Replicate slice slix acc    -> replicateOp slice (evalE slix) (manifest acc)
+        Slice slice acc slix        -> sliceOp slice (manifest acc) (evalE slix)
+
+        -- Consumers
+        -- ---------
+        Fold f z acc                -> foldOp (evalF f) (evalE z) (delayed acc)
+        Fold1 f acc                 -> fold1Op (evalF f) (delayed acc)
+        FoldSeg f z acc seg         -> foldSegOp (evalF f) (evalE z) (delayed acc) (delayed seg)
+        Fold1Seg f acc seg          -> fold1SegOp (evalF f) (delayed acc) (delayed seg)
+        Scanl f z acc               -> scanlOp (evalF f) (evalE z) (delayed acc)
+        Scanl' f z acc              -> scanl'Op (evalF f) (evalE z) (delayed acc)
+        Scanl1 f acc                -> scanl1Op (evalF f) (delayed acc)
+        Scanr f z acc               -> scanrOp (evalF f) (evalE z) (delayed acc)
+        Scanr' f z acc              -> scanr'Op (evalF f) (evalE z) (delayed acc)
+        Scanr1 f acc                -> scanr1Op (evalF f) (delayed acc)
+        Permute f def p acc         -> permuteOp (evalF f) (manifest def) (evalF p) (delayed acc)
+        Stencil sten b acc          -> stencilOp (evalF sten) b (manifest acc)
+        Stencil2 sten b1 acc1 b2 acc2-> stencil2Op (evalF sten) b1 (manifest acc1) b2 (manifest acc2)
   in
   case pacc of
     Avar ix                     -> prj ix aenv
@@ -178,35 +206,9 @@ evalOpenAcc (AST.Manifest pacc) aenv =
 
     Use arr                     -> toArr arr
     Unit e                      -> unitOp (evalE e)
-    Collect s                   -> evalSeq defaultSeqConfig s aenv
-
-    -- Producers
-    -- ---------
-    Map f acc                   -> mapOp (evalF f) (delayed acc)
-    Generate sh f               -> generateOp (evalE sh) (evalF f)
-    Transform sh p f acc        -> transformOp (evalE sh) (evalF p) (evalF f) (delayed acc)
-    Backpermute sh p acc        -> backpermuteOp (evalE sh) (evalF p) (delayed acc)
     Reshape sh acc              -> reshapeOp (evalE sh) (manifest acc)
-
-    ZipWith f acc1 acc2         -> zipWithOp (evalF f) (delayed acc1) (delayed acc2)
-    Replicate slice slix acc    -> replicateOp slice (evalE slix) (manifest acc)
-    Slice slice acc slix        -> sliceOp slice (manifest acc) (evalE slix)
-
-    -- Consumers
-    -- ---------
-    Fold f z acc                -> foldOp (evalF f) (evalE z) (delayed acc)
-    Fold1 f acc                 -> fold1Op (evalF f) (delayed acc)
-    FoldSeg f z acc seg         -> foldSegOp (evalF f) (evalE z) (delayed acc) (delayed seg)
-    Fold1Seg f acc seg          -> fold1SegOp (evalF f) (delayed acc) (delayed seg)
-    Scanl f z acc               -> scanlOp (evalF f) (evalE z) (delayed acc)
-    Scanl' f z acc              -> scanl'Op (evalF f) (evalE z) (delayed acc)
-    Scanl1 f acc                -> scanl1Op (evalF f) (delayed acc)
-    Scanr f z acc               -> scanrOp (evalF f) (evalE z) (delayed acc)
-    Scanr' f z acc              -> scanr'Op (evalF f) (evalE z) (delayed acc)
-    Scanr1 f acc                -> scanr1Op (evalF f) (delayed acc)
-    Permute f def p acc         -> permuteOp (evalF f) (manifest def) (evalF p) (delayed acc)
-    Stencil sten b acc          -> stencilOp (evalF sten) b (manifest acc)
-    Stencil2 sten b1 acc1 b2 acc2-> stencil2Op (evalF sten) b1 (manifest acc1) b2 (manifest acc2)
+    ArrayOp op                  -> evalOp op
+    Collect s                   -> evalSeq defaultSeqConfig s aenv
 
 -- Array tuple construction and projection
 --
@@ -221,14 +223,12 @@ evalAtuple (SnocAtup t a) aenv = (evalAtuple t aenv, evalOpenAcc a aenv)
 unitOp :: Elt e => e -> Scalar e
 unitOp e = newArray Z (const e)
 
-
 generateOp
     :: (Shape sh, Elt e)
     => sh
     -> (sh -> e)
     -> Array sh e
 generateOp = newArray
-
 
 transformOp
     :: (Shape sh, Shape sh', Elt b)
@@ -240,16 +240,14 @@ transformOp
 transformOp sh' p f (Delayed _ xs _)
   = newArray sh' (\ix -> f (xs $ p ix))
 
-
 reshapeOp
     :: (Shape sh, Shape sh', Elt e)
     => sh
     -> Array sh' e
     -> Array sh  e
 reshapeOp newShape arr@(Array _ adata)
-  = $boundsCheck "reshape" "shape mismatch" (size newShape == size (shape arr))
+  = $boundsCheck "reshape" ("shape mismatch: " ++ show (size newShape) ++ "/=" ++ show (size (shape arr))) (size newShape == size (shape arr))
   $ Array (fromElt newShape) adata
-
 
 replicateOp
     :: (Shape sh, Shape sl, Elt slix, Elt e)
@@ -262,18 +260,17 @@ replicateOp slice slix arr
   where
     (sh, pf) = extend slice (fromElt slix) (fromElt (shape arr))
 
-    extend :: SliceIndex slix sl co dim
-           -> slix
-           -> sl
-           -> (dim, dim -> sl)
-    extend SliceNil              ()        ()       = ((), const ())
-    extend (SliceAll sliceIdx)   (slx, ()) (sl, sz)
-      = let (dim', f') = extend sliceIdx slx sl
-        in  ((dim', sz), \(ix, i) -> (f' ix, i))
-    extend (SliceFixed sliceIdx) (slx, sz) sl
-      = let (dim', f') = extend sliceIdx slx sl
-        in  ((dim', sz), \(ix, _) -> f' ix)
-
+extend :: SliceIndex slix sl co dim
+       -> slix
+       -> sl
+       -> (dim, dim -> sl)
+extend SliceNil              ()        ()       = ((), const ())
+extend (SliceAll sliceIdx)   (slx, ()) (sl, sz)
+  = let (dim', f') = extend sliceIdx slx sl
+    in  ((dim', sz), \(ix, i) -> (f' ix, i))
+extend (SliceFixed sliceIdx) (slx, sz) sl
+  = let (dim', f') = extend sliceIdx slx sl
+    in  ((dim', sz), \(ix, _) -> f' ix)
 
 sliceOp
     :: (Shape sh, Shape sl, Elt slix, Elt e)
@@ -286,18 +283,17 @@ sliceOp slice arr slix
   where
     (sh', pf) = restrict slice (fromElt slix) (fromElt (shape arr))
 
-    restrict :: SliceIndex slix sl co sh
-             -> slix
-             -> sh
-             -> (sl, sl -> sh)
-    restrict SliceNil              ()        ()       = ((), const ())
-    restrict (SliceAll sliceIdx)   (slx, ()) (sl, sz)
-      = let (sl', f') = restrict sliceIdx slx sl
-        in  ((sl', sz), \(ix, i) -> (f' ix, i))
-    restrict (SliceFixed sliceIdx) (slx, i)  (sl, sz)
-      = let (sl', f') = restrict sliceIdx slx sl
-        in  $indexCheck "slice" i sz $ (sl', \ix -> (f' ix, i))
-
+restrict :: SliceIndex slix sl co sh
+         -> slix
+         -> sh
+         -> (sl, sl -> sh)
+restrict SliceNil              ()        ()       = ((), const ())
+restrict (SliceAll sliceIdx)   (slx, ()) (sl, sz)
+  = let (sl', f') = restrict sliceIdx slx sl
+    in  ((sl', sz), \(ix, i) -> (f' ix, i))
+restrict (SliceFixed sliceIdx) (slx, i)  (sl, sz)
+  = let (sl', f') = restrict sliceIdx slx sl
+    in  $indexCheck "slice" i sz $ (sl', \ix -> (f' ix, i))
 
 mapOp :: (Shape sh, Elt a, Elt b)
       => (a -> b)
@@ -305,7 +301,6 @@ mapOp :: (Shape sh, Elt a, Elt b)
       -> Array sh b
 mapOp f (Delayed sh xs _)
   = newArray sh (\ix -> f (xs ix))
-
 
 zipWithOp
     :: (Shape sh, Elt a, Elt b, Elt c)
@@ -331,7 +326,6 @@ zipWith'Op f (Delayed shx xs _) (Delayed shy ys _)
   where
     a `outside` b = or $ zipWith (>=) (shapeToList a) (shapeToList b)
 
-
 foldOp
     :: (Shape sh, Elt e)
     => (e -> e -> e)
@@ -345,7 +339,6 @@ foldOp f z (Delayed (sh :. n) arr _)
   | otherwise
   = newArray sh (\ix -> iter (Z:.n) (\(Z:.i) -> arr (ix :. i)) f z)
 
-
 fold1Op
     :: (Shape sh, Elt e)
     => (e -> e -> e)
@@ -353,7 +346,6 @@ fold1Op
     -> Array sh e
 fold1Op f (Delayed (sh :. n) arr _)
   = newArray sh (\ix -> iter1 (Z:.n) (\(Z:.i) -> arr (ix :. i)) f)
-
 
 foldSegOp
     :: forall sh e i. (Shape sh, Elt e, Elt i, IsIntegral i)
@@ -372,7 +364,6 @@ foldSegOp f z (Delayed (sh :. _) arr _) seg@(Delayed (Z :. n) _ _)
   where
     offset      = scanlOp (+) 0 seg
 
-
 fold1SegOp
     :: forall sh e i. (Shape sh, Elt e, Elt i, IsIntegral i)
     => (e -> e -> e)
@@ -388,7 +379,6 @@ fold1SegOp f (Delayed (sh :. _) arr _) seg@(Delayed (Z :. n) _ _)
                    iter1 (Z :. end-start) (\(Z:.i) -> arr (sz :. start+i)) f
   where
     offset      = scanlOp (+) 0 seg
-
 
 scanl1Op
     :: Elt e
@@ -411,7 +401,6 @@ scanl1Op f (Delayed sh@(Z :. n) _ ain)
 
       iter1 sh write (>>)
       return (aout, undefined)
-
 
 scanlOp
     :: Elt e
@@ -437,7 +426,6 @@ scanlOp f z (Delayed (Z :. n) _ ain)
       iter sh' write (>>) (return ())
       return (aout, undefined)
 
-
 scanl'Op
     :: Elt e
     => (e -> e -> e)
@@ -451,7 +439,6 @@ scanl'Op f z (scanlOp f z -> arr)
         n       = size (shape arr)
     in
     (arr', sum)
-
 
 scanrOp
     :: Elt e
@@ -477,7 +464,6 @@ scanrOp f z (Delayed (Z :. n) _ ain)
       iter sh' write (>>) (return ())
       return (aout, undefined)
 
-
 scanr1Op
     :: Elt e
     => (e -> e -> e)
@@ -500,7 +486,6 @@ scanr1Op f (Delayed sh@(Z :. n) _ ain)
       iter1 sh write (>>)
       return (aout, undefined)
 
-
 scanr'Op
     :: forall e. Elt e
     => (e -> e -> e)
@@ -522,7 +507,6 @@ scanr'Op f z (Delayed (Z :. n) _ ain)
 
       final <- trav (n-1) (fromElt z)
       return (aout, final)
-
 
 permuteOp
     :: (Shape sh, Shape sh', Elt e)
@@ -564,7 +548,6 @@ permuteOp f def@(Array _ adef) p (Delayed sh _ ain)
       iter sh update (>>) (return ())
       return (aout, undefined)
 
-
 backpermuteOp
     :: (Shape sh, Shape sh', Elt e)
     => sh'
@@ -573,7 +556,6 @@ backpermuteOp
     -> Array sh' e
 backpermuteOp sh' p (Delayed _ arr _)
   = newArray sh' (\ix -> arr $ p ix)
-
 
 stencilOp
     :: (Elt a, Elt b, Stencil sh a stencil)
@@ -591,7 +573,6 @@ stencilOp stencil boundary arr
       case bound sh ix boundary of
         Left v    -> toElt v
         Right ix' -> arr ! ix'
-
 
 stencil2Op
     :: (Elt a, Elt b, Elt c, Stencil sh a stencil1, Stencil sh b stencil2)
@@ -635,20 +616,20 @@ toSeqOp sliceIndex _ arr = map (sliceOp sliceIndex arr :: slix -> Array sl e)
 
 -- Evaluate a closed scalar expression
 --
-evalPreExp :: EvalAcc acc -> PreExp acc aenv t -> Val aenv -> t
-evalPreExp evalAcc e aenv = evalPreOpenExp evalAcc e EmptyElt aenv
+evalPreExp :: EvalAcc acc -> PreExp acc senv aenv t -> Val aenv -> Val' senv -> t
+evalPreExp evalAcc e = evalPreOpenExp evalAcc e EmptyElt
 
 -- Evaluate a closed scalar function
 --
-evalPreFun :: EvalAcc acc -> PreFun acc aenv t -> Val aenv -> t
-evalPreFun evalAcc f aenv = evalPreOpenFun evalAcc f EmptyElt aenv
+evalPreFun :: EvalAcc acc -> PreFun acc senv aenv t -> Val aenv -> Val' senv -> t
+evalPreFun evalAcc f = evalPreOpenFun evalAcc f EmptyElt
 
 -- Evaluate an open scalar function
 --
-evalPreOpenFun :: EvalAcc acc -> PreOpenFun acc env aenv t -> ValElt env -> Val aenv -> t
-evalPreOpenFun evalAcc (Body e) env aenv = evalPreOpenExp evalAcc e env aenv
-evalPreOpenFun evalAcc (Lam f)  env aenv =
-  \x -> evalPreOpenFun evalAcc f (env `PushElt` fromElt x) aenv
+evalPreOpenFun :: EvalAcc acc -> PreOpenFun acc env senv aenv t -> ValElt env -> Val aenv -> Val' senv -> t
+evalPreOpenFun evalAcc (Body e) env aenv senv = evalPreOpenExp evalAcc e env aenv senv
+evalPreOpenFun evalAcc (Lam f)  env aenv senv =
+  \x -> evalPreOpenFun evalAcc f (env `PushElt` fromElt x) aenv senv
 
 
 -- Evaluate an open scalar expression
@@ -660,19 +641,20 @@ evalPreOpenFun evalAcc (Lam f)  env aenv =
 --     leading to a large amount of wasteful recomputation.
 --
 evalPreOpenExp
-    :: forall acc env aenv t.
+    :: forall acc env senv aenv t.
        EvalAcc acc
-    -> PreOpenExp acc env aenv t
+    -> PreOpenExp acc env senv aenv t
     -> ValElt env
     -> Val aenv
+    -> Val' senv
     -> t
-evalPreOpenExp evalAcc pexp env aenv =
+evalPreOpenExp evalAcc pexp env aenv senv =
   let
-      evalE :: PreOpenExp acc env aenv t' -> t'
-      evalE e = evalPreOpenExp evalAcc e env aenv
+      evalE :: PreOpenExp acc env senv aenv t' -> t'
+      evalE e = evalPreOpenExp evalAcc e env aenv senv
 
-      evalF :: PreOpenFun acc env aenv f' -> f'
-      evalF f = evalPreOpenFun evalAcc f env aenv
+      evalF :: PreOpenFun acc env senv aenv f' -> f'
+      evalF f = evalPreOpenFun evalAcc f env aenv senv
 
       evalA :: acc aenv a -> a
       evalA a = evalAcc a aenv
@@ -680,12 +662,12 @@ evalPreOpenExp evalAcc pexp env aenv =
   case pexp of
     Let exp1 exp2               -> let !v1  = evalE exp1
                                        env' = env `PushElt` fromElt v1
-                                   in  evalPreOpenExp evalAcc exp2 env' aenv
+                                   in  evalPreOpenExp evalAcc exp2 env' aenv senv
     Var ix                      -> prjElt ix env
     Const c                     -> toElt c
     PrimConst c                 -> evalPrimConst c
     PrimApp f x                 -> evalPrim f (evalE x)
-    Tuple tup                   -> toTuple $ evalTuple evalAcc tup env aenv
+    Tuple tup                   -> toTuple $ evalTuple evalAcc tup env aenv senv
     Prj ix tup                  -> evalPrj ix . fromTuple $ evalE tup
     IndexNil                    -> Z
     IndexAny                    -> Any
@@ -737,7 +719,12 @@ evalPreOpenExp evalAcc pexp env aenv =
     ShapeSize sh                -> size (evalE sh)
     Intersect sh1 sh2           -> intersect (evalE sh1) (evalE sh2)
     Union sh1 sh2               -> union (evalE sh1) (evalE sh2)
-    Foreign _ f e               -> evalPreOpenFun evalAcc f EmptyElt Empty $ evalE e
+    IndexS x sh                 -> prj' x senv ! (senvSize senv .: evalE sh)
+    LinearIndexS x i            -> let c = prj' x senv
+                                       ix = senvSize senv .: fromIndex (indexInit (shape c)) (evalE i)
+                                   in c ! ix
+    ShapeS x                    -> indexInit (shape (prj' x senv))
+    Foreign _ f e               -> evalPreOpenFun evalAcc f EmptyElt Empty (EmptyS, 0) $ evalE e
 
 
 -- Scalar primitives
@@ -811,10 +798,10 @@ evalPrim (PrimFromIntegral ta tb) = evalFromIntegral ta tb
 -- Tuple construction and projection
 -- ---------------------------------
 
-evalTuple :: EvalAcc acc -> Tuple (PreOpenExp acc env aenv) t -> ValElt env -> Val aenv -> t
-evalTuple _       NilTup            _env _aenv = ()
-evalTuple evalAcc (tup `SnocTup` e) env  aenv  =
-  (evalTuple evalAcc tup env aenv, evalPreOpenExp evalAcc e env aenv)
+evalTuple :: EvalAcc acc -> Tuple (PreOpenExp acc env senv aenv) t -> ValElt env -> Val aenv -> Val' senv -> t
+evalTuple _       NilTup            _env _aenv _senv = ()
+evalTuple evalAcc (tup `SnocTup` e) env  aenv  senv  =
+  (evalTuple evalAcc tup env aenv senv, evalPreOpenExp evalAcc e env aenv senv)
 
 evalPrj :: TupleIdx t e -> t -> e
 evalPrj ZeroTupIdx       (!_, v)   = v
@@ -1082,10 +1069,6 @@ evalMin (NonNumScalarType ty)                | NonNumDict   <- nonNumDict ty   =
 -- Sequence evaluation
 -- ---------------
 
--- Position in sequence.
---
-type SeqPos = Int
-
 -- Configuration for sequence evaluation.
 --
 data SeqConfig = SeqConfig
@@ -1098,218 +1081,97 @@ data SeqConfig = SeqConfig
 -- Default sequence evaluation configuration for testing purposes.
 --
 defaultSeqConfig :: SeqConfig
-defaultSeqConfig = SeqConfig { chunkSize = 2 }
+defaultSeqConfig = SeqConfig { chunkSize = case unsafePerformIO (queryFlag chunk_size) of Nothing -> 5; Just n -> n }
 
-type Chunk a = Vector' a
+-- Chunk of arrays of shape 'sh' and element type 'e'.
+type Chunk sh e = Array (sh :. Int) e
 
--- The empty chunk. O(1).
-emptyChunk :: Arrays a => Chunk a
-emptyChunk = empty'
+indexLast :: Shape sh => (sh :. Int) -> Int
+indexLast = last . shapeToList
 
--- Number of arrays in chunk. O(1).
---
-clen :: Arrays a => Chunk a -> Int
-clen = length'
+indexInit :: Shape sh => (sh :. Int) -> sh
+indexInit = listToShape . init . shapeToList
 
-elemsPerChunk :: SeqConfig -> Int -> Int
-elemsPerChunk conf n
-  | n < 1 = chunkSize conf
-  | otherwise =
-    let (a,b) = chunkSize conf `quotRem` n
-    in a + signum b
+infixr 3 .:
+(.:) :: Shape sh => Int -> sh -> (sh :. Int)
+(.:) n sh = listToShape (shapeToList sh ++ [n])
 
--- Drop a number of arrays from a chunk. O(1). Note: Require keeping a
--- scan of element sizes.
---
-cdrop :: Arrays a => Int -> Chunk a -> Chunk a
-cdrop = drop' dropOp (fst . offsetsOp)
-
--- Get all the shapes of a chunk of arrays. O(1).
---
-chunkShapes :: Chunk (Array sh a) -> Vector sh
-chunkShapes = shapes'
-
--- Get all the elements of a chunk of arrays. O(1).
---
-chunkElems :: Chunk (Array sh a) -> Vector a
-chunkElems = elements'
-
--- Convert a vector to a chunk of scalars.
---
-vec2Chunk :: Elt e => Vector e -> Chunk (Scalar e)
-vec2Chunk = vec2Vec'
-
--- Convert a list of arrays to a chunk.
---
-fromListChunk :: Arrays a => [a] -> Vector' a
-fromListChunk = fromList' concatOp
-
--- Convert a chunk to a list of arrays.
---
-toListChunk :: Arrays a => Vector' a -> [a]
-toListChunk = toList' fetchAllOp
-
--- fmap for Chunk. O(n).
---   TODO: Use vectorised function.
-mapChunk :: (Arrays a, Arrays b)
-         => (a -> b)
-         -> Chunk a -> Chunk b
-mapChunk f c = fromListChunk $ map f (toListChunk c)
-
--- zipWith for Chunk. O(n).
---  TODO: Use vectorised function.
-zipWithChunk :: (Arrays a, Arrays b, Arrays c)
-             => (a -> b -> c)
-             -> Chunk a -> Chunk b -> Chunk c
-zipWithChunk f c1 c2 = fromListChunk $ zipWith f (toListChunk c1) (toListChunk c2)
-
--- A window on a sequence.
---
-data Window a = Window
-  { chunk :: Chunk a   -- Current allocated chunk.
-  , wpos  :: SeqPos    -- Position of the window on the sequence, given
-                       -- in number of elements.
-  }
-
--- The initial empty window.
---
-window0 :: Arrays a => Window a
-window0 = Window { chunk = emptyChunk, wpos = 0 }
-
--- Index the given window by the given index on the sequence.
---
-(!#) :: Arrays a => Window a -> SeqPos -> Chunk a
-w !# i
-  | j <- i - wpos w
-  , j >= 0
-  = cdrop j (chunk w)
-  | otherwise = error $ "Window indexed before position. wpos = " ++ show (wpos w) ++ " i = " ++ show i
-
--- Move the give window by supplying the next chunk.
---
-moveWin :: Arrays a => Window a -> Chunk a -> Window a
-moveWin w c = w { chunk = c
-                , wpos = wpos w + clen (chunk w)
-                }
-
--- A cursor on a sequence.
---
-data Cursor senv a = Cursor
-  { ref  :: Idx senv a -- Reference to the sequence.
-  , cpos :: SeqPos     -- Position of the cursor on the sequence,
-                       -- given in number of elements.
-  }
-
--- Initial cursor.
---
-cursor0 :: Idx senv a -> Cursor senv a
-cursor0 x = Cursor { ref = x, cpos = 0 }
-
--- Advance cursor by a relative amount.
---
-moveCursor :: Int -> Cursor senv a -> Cursor senv a
-moveCursor k c = c { cpos = cpos c + k }
+type Val' senv = (ValS senv, Int)
 
 -- Valuation for an environment of sequence windows.
 --
-data Val' senv where
-  Empty' :: Val' ()
-  Push'  :: Val' senv -> Window t -> Val' (senv, t)
+data ValS senv where
+  EmptyS :: ValS ()
+  PushS  :: ValS senv -> Chunk sh e -> ValS (senv, Array sh e)
 
 -- Projection of a window from a window valuation using a de Bruijn
 -- index.
 --
-prj' :: Idx senv t -> Val' senv -> Window t
-prj' ZeroIdx       (Push' _   v) = v
-prj' (SuccIdx idx) (Push' val _) = prj' idx val
-prj' _             _             = $internalError "prj" "inconsistent valuation"
+prjS :: Idx senv (Array sh e) -> ValS senv -> Chunk sh e
+prjS ZeroIdx       (PushS _   v) = v
+prjS (SuccIdx idx) (PushS val _) = prjS idx val
+prjS _             _             = $internalError "prj" "inconsistent valuation"
 
--- Projection of a chunk from a window valuation using a sequence
--- cursor.
+senvSize :: Val' senv -> Int
+senvSize = snd
+
+-- Projection of a window from a window valuation using a de Bruijn
+-- index.
 --
-prjChunk :: Arrays a => Cursor senv a -> Val' senv -> Chunk a
-prjChunk c senv = prj' (ref c) senv !# cpos c
+prj' :: Idx senv (Array sh e) -> Val' senv -> Chunk sh e
+prj' x (senv, _) = prjS x senv
+
+push' :: Val' senv -> Chunk sh e -> Val' (senv, Array sh e)
+push' (senv, n) c = (PushS senv c, n)
+
+data Shapes senv where
+  EmptyShapes :: Shapes ()
+  PushShape   :: Shapes senv -> sh -> Shapes (senv, Array sh e)
+
+-- Projection of a window from a window valuation using a de Bruijn
+-- index.
+--
+prjShape :: Idx senv (Array sh e) -> Shapes senv -> sh
+prjShape ZeroIdx       (PushShape _   v) = v
+prjShape (SuccIdx idx) (PushShape val _) = prjShape idx val
+prjShape _             _             = $internalError "prj" "inconsistent valuation"
 
 -- An executable sequence.
 --
 data ExecSeq senv arrs where
-  ExecP :: Arrays a => Window a -> ExecP senv a -> ExecSeq (senv, a) arrs -> ExecSeq senv  arrs
-  ExecC :: Arrays a =>             ExecC senv a ->                           ExecSeq senv  a
-  ExecR :: Arrays a =>             Cursor senv a ->                          ExecSeq senv  [a]
+  ExecP :: (Shape sh, Elt e) => ExecP senv (Array sh e) -> ExecSeq (senv, Array sh e) arrs -> ExecSeq senv  arrs
+  ExecC :: Arrays a =>          ExecC senv a ->                                               ExecSeq senv  a
+  ExecR :: (Shape sh, Elt e) => Idx   senv (Array sh e) ->                                    ExecSeq senv  [Array sh e]
 
 -- An executable producer.
 --
 data ExecP senv a where
-  ExecStreamIn :: Int
-               -> [a]
-               -> ExecP senv a
+  ExecStreamIn :: sh
+               -> [Array sh a]
+               -> ExecP senv (Array sh a)
 
-  ExecMap :: Arrays a
-          => (Chunk a -> Chunk b)
-          -> Cursor senv a
-          -> ExecP senv b
-
-  ExecZipWith :: (Arrays a, Arrays b)
-              => (Chunk a -> Chunk b -> Chunk c)
-              -> Cursor senv a
-              -> Cursor senv b
-              -> ExecP senv c
+  ExecMap :: (Val' senv -> Chunk sh e)
+          -> ExecP senv (Array sh e)
 
   -- Stream scan skeleton.
-  ExecScan :: Arrays a
-           => (s -> Chunk a -> (Chunk r, s)) -- Chunk scanner.
-           -> s                              -- Accumulator (internal state).
-           -> Cursor senv a                  -- Input stream.
-           -> ExecP senv r
+  ExecScan :: (Shape sh, Elt e)
+           => (Val' senv -> s -> (Chunk sh e, s))   -- Chunk scanner.
+           -> s                                     -- Accumulator (internal state).
+           -> ExecP senv (Array sh e)
 
 -- An executable consumer.
 --
 data ExecC senv a where
 
   -- Stream reduction skeleton.
-  ExecFold :: Arrays a
-           => (s -> Chunk a -> s) -- Chunk consumer function.
-           -> (s -> r)            -- Finalizer function.
-           -> s                   -- Accumulator (internal state).
-           -> Cursor senv a       -- Input stream.
+  ExecFold :: (Val' senv -> s -> s)   -- Chunk consumer function.
+           -> (s -> r)                -- Finalizer function.
+           -> s                       -- Accumulator (internal state).
            -> ExecC senv r
 
   ExecStuple :: IsAtuple a
              => Atuple (ExecC senv) (TupleRepr a)
              -> ExecC senv a
-
-minCursor :: ExecSeq senv a -> SeqPos
-minCursor s = travS s 0
-  where
-    travS :: ExecSeq senv a -> Int -> SeqPos
-    travS s i =
-      case s of
-        ExecP _ p s' -> travP p i `min` travS s' (i+1)
-        ExecC   c    -> travC c i
-        ExecR   _    -> maxBound
-
-    k :: Cursor senv a -> Int -> SeqPos
-    k c i
-      | i == idxToInt (ref c) = cpos c
-      | otherwise             = maxBound
-
-    travP :: ExecP senv a -> Int -> SeqPos
-    travP p i =
-      case p of
-        ExecStreamIn _ _ -> maxBound
-        ExecMap _ c -> k c i
-        ExecZipWith _ c1 c2 -> k c1 i `min` k c2 i
-        ExecScan _ _ c -> k c i
-
-    travT :: Atuple (ExecC senv) t -> Int -> SeqPos
-    travT NilAtup        _ = maxBound
-    travT (SnocAtup t c) i = travT t i `min` travC c i
-
-    travC :: ExecC senv a -> Int -> SeqPos
-    travC c i =
-      case c of
-        ExecFold _ _ _ cu -> k cu i
-        ExecStuple t      -> travT t i
 
 evalDelayedSeq :: SeqConfig
                -> DelayedSeq arrs
@@ -1325,98 +1187,167 @@ evalSeq conf s aenv = evalSeq' s
   where
     evalSeq' :: PreOpenSeq DelayedOpenAcc aenv senv arrs -> arrs
     evalSeq' (Producer _ s) = evalSeq' s
-    evalSeq' (Consumer _)   = loop (initSeq aenv s)
-    evalSeq' (Reify _)      = reify (initSeq aenv s)
+    evalSeq' (Consumer _)   =
+      let (s0, maxElemSize) = initSeq aenv EmptyShapes s
+          pd = maxStepSize (chunkSize conf) maxElemSize
+      in loop pd s0
+    evalSeq' (Reify _) =
+      let (s0, maxElemSize) = initSeq aenv EmptyShapes s
+          pd = maxStepSize (chunkSize conf) maxElemSize
+      in reify pd s0
 
     -- Initialize the producers and the accumulators of the consumers
     -- with the given array enviroment.
     initSeq :: forall senv arrs'.
                 Val aenv
+             -> Shapes senv
              -> PreOpenSeq DelayedOpenAcc aenv senv arrs'
-             -> ExecSeq senv arrs'
-    initSeq aenv s =
+             -> (ExecSeq senv arrs', Int)
+    initSeq aenv shs s =
       case s of
-        Producer   p s' -> ExecP window0 (initProducer p) (initSeq aenv s')
-        Consumer   c    -> ExecC         (initConsumer c)
-        Reify      ix   -> ExecR (cursor0 ix)
-
-    -- Generate a list from the sequence.
-    reify :: forall arrs. ExecSeq () [arrs]
-          -> [arrs]
-    reify s = case step s Empty' of
-                (Just s', a) -> a ++ reify s'
-                (Nothing, a) -> a
+        Producer   p s' ->
+          let (execP, sh) = initProducer p shs
+              (s'',   n1) = initSeq aenv (PushShape shs sh) s'
+          in (ExecP execP s'', size sh `max` n1)
+        Consumer   c    -> (ExecC (initConsumer c), 0)
+        Reify      ix   -> (ExecR ix, 0)
 
     -- Iterate the given sequence until it terminates.
     -- A sequence only terminates when one of the producers are exhausted.
     loop :: Arrays arrs
-         => ExecSeq () arrs
+         => Int
+         -> ExecSeq () arrs
          -> arrs
-    loop s =
-      case step' s of
-        (Nothing, arrs) -> arrs
-        (Just s', _)    -> loop s'
+    loop n s =
+      let k = stepSize n s
+          (s', arrs0) = step s (EmptyS, k)
+      in if k < n then arrs0 else loop n s'
 
-      where
-        step' :: ExecSeq () arrs -> (Maybe (ExecSeq () arrs), arrs)
-        step' s = step s Empty'
+    -- Iterate the given sequence until it terminates.
+    -- A sequence only terminates when one of the producers are exhausted.
+    reify :: Arrays (Array sh e)
+          => Int
+          -> ExecSeq () [Array sh e]
+          -> [Array sh e]
+    reify n s =
+      let k = stepSize n s
+          (s', arrs0) = step s (EmptyS, k)
+      in if k < n then arrs0 else arrs0 ++ reify n s'
+
+    maxStepSize :: Int -> Int -> Int
+    maxStepSize maxChunkSize elemSize =
+      let (a,b) = maxChunkSize `quotRem` (elemSize `max` 1)
+      in a + signum b
+
+    stepSize :: Int -> ExecSeq senv arrs' -> Int
+    stepSize n s =
+      case s of
+        ExecP p s -> min (stepSize n s) $
+          case p of
+            ExecStreamIn _ xs -> length (take n xs)
+            _ -> n
+        _ -> n
 
     -- One iteration of a sequence.
     step :: forall senv arrs'.
             ExecSeq senv arrs'
          -> Val' senv
-         -> (Maybe (ExecSeq senv arrs'), arrs')
+         -> (ExecSeq senv arrs', arrs')
     step s senv =
       case s of
-        ExecP w p s' ->
-          let (c, mp')  = produce p senv
-              finished  = 0 == clen (w !# minCursor s')
-              w'        = if finished then moveWin w c else w
-              (ms'', a) = step s' (senv `Push'` w')
-          in case ms'' of
-            Nothing  -> (Nothing, a)
-            Just s'' | finished
-                     , Just p' <- mp'
-                     -> (Just (ExecP w' p' s''), a)
-                     | not finished
-                     -> (Just (ExecP w' p  s''), a)
-                     | otherwise
-                     -> (Nothing, a)
-        ExecC   c    -> let (c', acc) = consume c senv
-                        in (Just (ExecC c'), acc)
-        ExecR ix     -> let c = prjChunk ix senv in (Just (ExecR (moveCursor (clen c) ix)), toListChunk c)
+        ExecP p s' ->
+          let (c', p') = produce p senv
+              (s'', a) = step s' (senv `push'` c')
+          in (ExecP p' s'', a)
+        ExecC   c  ->
+          let (c', a) = consume c senv
+          in  (ExecC c', a)
+        ExecR x -> (ExecR x, chunkToList (senvSize senv) (prj' x senv))
 
-    evalA :: DelayedOpenAcc aenv a -> a
-    evalA acc = evalOpenAcc acc aenv
+    evalClosedExp :: DelayedExp () aenv t -> t
+    evalClosedExp exp = evalPreExp evalOpenAcc exp aenv (EmptyS, 0)
 
-    evalAF :: DelayedOpenAfun aenv f -> f
-    evalAF f = evalOpenAfun f aenv
+    evalF :: DelayedFun senv aenv f -> Val' senv -> Int -> f
+    evalF fun (senv, _) i = evalPreFun evalOpenAcc fun aenv (senv, i)
 
-    evalE :: DelayedExp aenv t -> t
-    evalE exp = evalPreExp evalOpenAcc exp aenv
+    evalClosedFun :: DelayedFun () aenv f -> f
+    evalClosedFun fun = evalPreFun evalOpenAcc fun aenv (EmptyS, 0)
 
-    evalF :: DelayedFun aenv f -> f
-    evalF fun = evalPreFun evalOpenAcc fun aenv
-
-    initProducer :: forall a senv.
-                    Producer DelayedOpenAcc aenv senv a
-                 -> ExecP senv a
-    initProducer p =
+    initProducer :: forall sh e senv.
+                    Producer DelayedOpenAcc aenv senv (Array sh e)
+                 -> Shapes senv
+                 -> (ExecP senv (Array sh e), sh)
+    initProducer p shs =
       case p of
-        StreamIn arrs -> ExecStreamIn 1 arrs
+        StreamIn shExp arrs ->
+          let sh = evalClosedExp shExp
+          in (ExecStreamIn sh arrs, sh)
         ToSeq sliceIndex slix (delayed -> Delayed sh ix _) ->
-          let n   = R.size (R.sliceShape sliceIndex (fromElt sh))
-              k   = elemsPerChunk conf n
-          in ExecStreamIn k (toSeqOp sliceIndex slix (newArray sh ix))
-        MapSeq     f x       -> ExecMap     (mapChunk (evalAF f)) (cursor0 x)
-        ChunkedMapSeq f x    -> ExecMap     (evalAF f) (cursor0 x)
-        ZipWithSeq f x y     -> ExecZipWith (zipWithChunk (evalAF f)) (cursor0 x) (cursor0 y)
-        ScanSeq    f e x     -> ExecScan scanner (evalE e) (cursor0 x)
+          let sl = R.sliceShape sliceIndex (fromElt sh)
+          in (ExecStreamIn (toElt sl) (toSeqOp sliceIndex slix (newArray sh ix)), toElt sl)
+        SeqOp op -> (initSeqOp op, seqOpShape op shs)
+        ScanSeq f e x -> (ExecScan scanner (evalClosedExp e), Z)
           where
-            scanner a c =
-              let v0 = chunkElems c
-                  (v1, a') = scanl'Op (evalF f) a (delayArray v0)
-              in (vec2Chunk v1, fromScalar a')
+            scanner senv a =
+              let (v1, a') = scanl'Op (evalClosedFun f) a (delayArray (prj' x senv))
+              in (v1, a' ! Z)
+
+    initSeqOp :: PreOpenArrayOp (Idx senv) DelayedOpenAcc senv aenv (Array sh e) -> ExecP senv (Array sh e)
+    initSeqOp op = ExecMap $ \ senv ->
+      case op of
+--        Unit e                    -> unitSop (evalE e senv) (senvSize senv)
+        Map f x                   -> mapSop (evalF f senv) (prj' x senv)
+        Generate sh f             -> generateSop (evalClosedExp sh) (evalF f senv) (senvSize senv)
+        Transform sh p f x        -> transformSop (evalClosedExp sh) (evalF p senv) (evalF f senv) (prj' x senv)
+        Backpermute sh p x        -> backpermuteSop (evalClosedExp sh) (evalF p senv) (prj' x senv)
+--        Reshape sh x              -> reshapeSop (evalClosedExp sh) (prj' x senv)
+
+        ZipWith f x1 x2           -> zipWithSop (evalF f senv) (prj' x1 senv) (prj' x2 senv)
+        Replicate slice slix x    -> replicateSop slice (evalClosedExp slix) (prj' x senv)
+        Slice slice x slix        -> sliceSop slice (evalClosedExp slix) (prj' x senv)
+
+        -- Consumers
+        -- ---------
+        Fold f z x                -> foldSop (evalClosedFun f) (evalClosedExp z) (prj' x senv)
+        Fold1 f x                 -> fold1Sop (evalClosedFun f) (prj' x senv)
+        FoldSeg f z x y           -> foldSegSop (evalClosedFun f) (evalClosedExp z) (prj' x senv) (prj' y senv)
+        Fold1Seg f x y            -> fold1SegSop (evalClosedFun f) (prj' x senv) (prj' y senv)
+        Scanl f z x               -> scanlSop (evalClosedFun f) (evalClosedExp z) (prj' x senv)
+        Scanl1 f x                -> scanl1Sop (evalClosedFun f) (prj' x senv)
+        Scanr f z x               -> scanrSop (evalClosedFun f) (evalClosedExp z) (prj' x senv)
+        Scanr1 f x                -> scanr1Sop (evalClosedFun f) (prj' x senv)
+        Permute f x1 p x2         -> permuteSop (evalClosedFun f) (evalF p senv) (prj' x1 senv) (prj' x2 senv)
+        Stencil sten b x          -> stencilSop (evalClosedFun sten) b (prj' x senv)
+        Stencil2 sten b1 x1 b2 x2 -> stencil2Sop (evalClosedFun sten) b1 b2 (prj' x1 senv) (prj' x2 senv)
+
+
+    seqOpShape :: PreOpenArrayOp (Idx senv) DelayedOpenAcc senv aenv (Array sh e) -> Shapes senv -> sh
+    seqOpShape op shs =
+      case op of
+--        Unit _                    -> Z
+        Map _ x                   -> prjShape x shs
+        Generate sh _             -> evalClosedExp sh
+        Transform sh _ _ _        -> evalClosedExp sh
+        Backpermute sh _ _        -> evalClosedExp sh
+--        Reshape sh _              -> evalClosedExp sh
+
+        ZipWith _ x1 x2           -> prjShape x1 shs `intersect` prjShape x2 shs
+        Replicate slice slix x    -> toElt $ fst $ extend slice (fromElt (evalClosedExp slix)) (fromElt (prjShape x shs))
+        Slice slice x slix        -> toElt $ fst $ restrict slice (fromElt (evalClosedExp slix)) (fromElt (prjShape x shs))
+
+        -- Consumers
+        -- ---------
+        Fold _ _ x                -> let sh :. _ = prjShape x shs in sh
+        Fold1 _ x                 -> let sh :. _ = prjShape x shs in sh
+        FoldSeg _ _ x y           -> let sh :. _ = prjShape x shs in let _ :. n = prjShape y shs in sh :. n
+        Fold1Seg _ x y            -> let sh :. _ = prjShape x shs in let _ :. n = prjShape y shs in sh :. n
+        Scanl _ _ x               -> let Z :. n = prjShape x shs in Z :. n + 1
+        Scanl1 _ x                -> prjShape x shs
+        Scanr _ _ x               -> let Z :. n = prjShape x shs in Z :. n + 1
+        Scanr1 _ x                -> prjShape x shs
+        Permute _ x1 _ _          -> prjShape x1 shs
+        Stencil _ _ x             -> prjShape x shs
+        Stencil2 _ _ x1 _ x2      -> prjShape x1 shs `intersect` prjShape x2 shs
 
     initConsumer :: forall a senv.
                     Consumer DelayedOpenAcc aenv senv a
@@ -1424,16 +1355,16 @@ evalSeq conf s aenv = evalSeq' s
     initConsumer c =
       case c of
         FoldSeq f e x ->
-          let f' = evalF f
-              a0 = newArray (Z :. chunkSize conf) (const (evalE e))
-              consumer v c = zipWith'Op f' (delayArray v) (delayArray (chunkElems c))
-              finalizer = fold1Op f' . delayArray
-          in ExecFold consumer finalizer a0 (cursor0 x)
+          let a0 = unitSop (\ _ -> evalClosedExp e) (chunkSize conf)
+              consumer senv v = zipWith'Op (evalClosedFun f) (delayArray v) (delayArray (prj' x senv))
+              finalizer = fold1Op (evalClosedFun f)  . delayArray
+          in ExecFold consumer finalizer a0
         FoldSeqFlatten f acc x ->
-          let f' = evalAF f
-              a0 = evalA acc
-              consumer a c = f' a (chunkShapes c) (chunkElems c)
-          in ExecFold consumer id a0 (cursor0 x)
+          let f' = evalOpenAfun f aenv
+              a0 = evalOpenAcc acc aenv
+              consumer senv a = f' a (prj' x senv)
+              finalizer = id
+          in ExecFold consumer finalizer a0
         Stuple t ->
           let initTup :: Atuple (Consumer DelayedOpenAcc aenv senv) t -> Atuple (ExecC senv) t
               initTup NilAtup        = NilAtup
@@ -1442,43 +1373,33 @@ evalSeq conf s aenv = evalSeq' s
 
     delayed :: DelayedOpenAcc aenv (Array sh e) -> Delayed (Array sh e)
     delayed AST.Manifest{}  = $internalError "evalOpenAcc" "expected delayed array"
-    delayed AST.Delayed{..} = Delayed (evalPreExp evalOpenAcc extentD aenv)
-                                      (evalPreFun evalOpenAcc indexD aenv)
-                                      (evalPreFun evalOpenAcc linearIndexD aenv)
+    delayed AST.Delayed{..} = Delayed (evalPreExp evalOpenAcc extentD aenv (EmptyS, 0))
+                                      (evalPreFun evalOpenAcc indexD aenv (EmptyS, 0))
+                                      (evalPreFun evalOpenAcc linearIndexD aenv (EmptyS, 0))
 
-produce :: Arrays a => ExecP senv a -> Val' senv -> (Chunk a, Maybe (ExecP senv a))
+produce :: (Shape sh, Elt e)
+        => ExecP senv (Array sh e)
+        -> Val' senv -> (Chunk sh e, ExecP senv (Array sh e))
 produce p senv =
   case p of
-    ExecStreamIn k xs ->
-      let (xs', xs'') = (take k xs, drop k xs)
-          c           = fromListChunk xs'
-          mp          = if null xs''
-                        then Nothing
-                        else Just (ExecStreamIn k xs'')
-      in (c, mp)
-    ExecMap f x ->
-      let c = prjChunk x senv
-      in (f c, Just $ ExecMap f (moveCursor (clen c) x))
-    ExecZipWith f x y ->
-      let c1 = prjChunk x senv
-          c2 = prjChunk y senv
-          k = clen c1 `min` clen c2
-      in (f c1 c2, Just $ ExecZipWith f (moveCursor k x) (moveCursor k y))
-    ExecScan scanner a x ->
-      let c = prjChunk x senv
-          (c', a') = scanner a c
-          k = clen c
-      in (c', Just $ ExecScan scanner a' (moveCursor k x))
+    ExecStreamIn sh xs ->
+      let k           = senvSize senv
+          (xs', xs'') = (take k xs, drop k xs)
+          c           = reshapeOp (length xs' .: sh) $ concatVectors (size sh) (map (reshapeOp (Z :. size sh)) xs')
+      in (c, ExecStreamIn sh xs'')
+    ExecMap f -> (f senv, ExecMap f)
+    ExecScan scanner a ->
+      let (c', a') = scanner senv a
+      in (c', ExecScan scanner a')
 
 consume :: forall senv a. ExecC senv a -> Val' senv -> (ExecC senv a, a)
 consume c senv =
   case c of
-    ExecFold f g acc x ->
-      let c    = prjChunk x senv
-          acc' = f acc c
+    ExecFold f g acc ->
+      let acc' = f senv acc
       -- Even though we call g here, lazy evaluation should guarantee it is
       -- only ever called once.
-      in (ExecFold f g acc' (moveCursor (clen c) x), g acc')
+      in (ExecFold f g acc', g acc')
     ExecStuple t ->
       let consT :: Atuple (ExecC senv) t -> (Atuple (ExecC senv) t, t)
           consT NilAtup        = (NilAtup, ())
@@ -1496,31 +1417,207 @@ evalExtend (PushEnv ext1 ext2) aenv | aenv' <- evalExtend ext1 aenv
 delayArray :: Array sh e -> Delayed (Array sh e)
 delayArray arr@(Array _ adata) = Delayed (shape arr) (arr!) (toElt . unsafeIndexArrayData adata)
 
-fromScalar :: Scalar a -> a
-fromScalar = (!Z)
-
-concatOp :: forall e. Elt e => [Vector e] -> Vector e
-concatOp = concatVectors
-
-fetchAllOp :: (Shape sh, Elt e) => Segments sh -> Vector e -> [Array sh e]
-fetchAllOp segs elts
-  | (offsets, n) <- offsetsOp segs
-  , (n ! Z) <= size (shape elts)
-  = [fetch (segs ! (Z :. i)) (offsets ! (Z :. i)) | i <- [0 .. size (shape segs) - 1]]
-  | otherwise = error $ "illegal argument to fetchAllOp"
+chunkToList :: (Shape sh, Elt e) => Int -> Chunk sh e -> [Array sh e]
+chunkToList n c = map go [0..n-1]
   where
-    fetch sh offset = newArray sh (\ ix -> elts ! (Z :. ((toIndex sh ix) + offset)))
+    go i = newArray (indexInit (shape c)) (\ ix -> c ! (i .: ix))
 
-dropOp :: Elt e => Int -> Vector e -> Vector e
-dropOp i v   -- TODO
-             --  * Implement using C-style pointer-plus.
-             --    ; dropOp is used often (from prjChunk),
-             --      so it ought to be efficient O(1).
-  | n <- size (shape v)
-  , i <= n
-  , i >= 0
-  = newArray (Z :. n - i) (\ (Z :. j) -> v ! (Z :. i + j))
-  | otherwise = error $ "illegal argument to drop"
 
-offsetsOp :: Shape sh => Segments sh -> (Vector Int, Scalar Int)
-offsetsOp segs = scanl'Op (+) 0 $ delayArray (mapOp size (delayArray segs))
+unitSop :: Elt e => (Int -> e) -> Int -> Chunk Z e
+unitSop e n = generateOp (Z :. n) (\ (Z :. i) -> e i)
+
+generateSop
+    :: forall sh e. (Shape sh, Elt e)
+    => sh
+    -> (Int -> sh -> e)
+    -> Int
+    -> Chunk sh e
+generateSop sh f n = generateOp (n .: sh) (\ ix -> f (indexLast ix) (indexInit ix))
+
+transformSop
+    :: (Shape sh, Shape sh', Elt b)
+    => sh'
+    -> (Int -> sh' -> sh)
+    -> (Int -> a -> b)
+    -> Chunk sh a
+    -> Chunk sh' b
+transformSop sh' p f arr
+  = newArray (indexLast (shape arr) .: sh') (\ix -> f (indexLast ix) (arr ! (indexLast ix .: p (indexLast ix) (indexInit ix))))
+    --transformOp (indexLast (shape arr) .: sh') (\ ix -> indexLast ix .: p (indexLast ix) (indexInit ix)) (f _) (delayArray arr)
+
+{-
+reshapeSop
+    :: (Shape sh, Shape sh', Elt e)
+    => sh
+    -> Chunk sh' e
+    -> Chunk sh  e
+reshapeSop sh arr
+  = reshapeOp (indexLast (shape arr) .: sh) arr
+-}
+
+replicateSop
+    :: (Shape sh, Shape sl, Elt slix, Elt e)
+    => SliceIndex (EltRepr slix) (EltRepr sl) co (EltRepr sh)
+    -> slix
+    -> Chunk sl e
+    -> Chunk sh e
+replicateSop slice slix arr
+  = newArray (indexLast (shape arr) .: toElt sh) (\ix -> arr ! (indexLast ix .: liftToElt pf (indexInit ix)))
+  where
+    (sh, pf) = extend slice (fromElt slix) (fromElt (indexInit (shape arr)))
+
+sliceSop
+    :: (Shape sh, Shape sl, Elt slix, Elt e)
+    => SliceIndex (EltRepr slix) (EltRepr sl) co (EltRepr sh)
+    -> slix
+    -> Chunk sh e
+    -> Chunk sl e
+sliceSop slice slix arr
+  = newArray (indexLast (shape arr) .: toElt sh') (\ix -> arr ! (indexLast ix .: liftToElt pf (indexInit ix)))
+  where
+    (sh', pf) = restrict slice (fromElt slix) (fromElt (indexInit (shape arr)))
+
+
+mapSop :: (Shape sh, Elt a, Elt b)
+      => (Int -> a -> b)
+      -> Chunk sh a
+      -> Chunk sh b
+mapSop f arr
+  = newArray (shape arr) (\ix -> f (indexLast ix) (arr ! ix))
+
+zipWithSop
+    :: (Shape sh, Elt a, Elt b, Elt c)
+    => (Int -> a -> b -> c)
+    -> Chunk sh a
+    -> Chunk sh b
+    -> Chunk sh c
+zipWithSop f a1 a2
+  = newArray (shape a1 `intersect` shape a2) (\ix -> f (indexLast ix) (a1 ! ix) (a2 ! ix))
+  -- = zipWithOp f (delayArray a1) (delayArray a2)
+
+foldSop
+    :: (Shape sh, Elt e)
+    => (e -> e -> e)
+    -> e
+    -> Chunk (sh :. Int) e
+    -> Chunk sh e
+foldSop f z a
+  = foldOp f z (delayArray a)
+
+fold1Sop
+    :: (Shape sh, Elt e)
+    => (e -> e -> e)
+    -> Chunk (sh :. Int) e
+    -> Chunk sh e
+fold1Sop f a
+  = fold1Op f (delayArray a)
+
+concatOp :: (Shape sh, Elt e) => Array (sh :. Int :. Int) e -> Array (sh :. Int) e
+concatOp arr
+  = reshapeOp sh' arr
+  where
+    sh = shape arr
+    sh0 :. k = indexInit sh
+    n = indexLast sh
+    sh' = sh0 :. n * k
+
+foldSegSop
+    :: forall sh e i. (Shape sh, Elt e, Elt i, IsIntegral i)
+    => (e -> e -> e)
+    -> e
+    -> Chunk (sh :. Int) e
+    -> Chunk (Z :. Int) i
+    -> Chunk (sh :. Int) e
+foldSegSop f z arr seg
+  = reshapeOp ((n .: sh) :. k) $ foldSegOp f z (delayArray (concatOp arr)) (delayArray (concatOp seg))
+    where
+      n  = indexLast (shape arr)
+      sh :. _ = indexInit (shape arr)
+      _  :. k = indexInit (shape seg)
+
+fold1SegSop
+    :: forall sh e i. (Shape sh, Elt e, Elt i, IsIntegral i)
+    => (e -> e -> e)
+    -> Chunk (sh :. Int) e
+    -> Chunk (Z :. Int) i
+    -> Chunk (sh :. Int) e
+fold1SegSop f arr seg
+  = reshapeOp ((n .: sh) :. k) $ fold1SegOp f (delayArray (concatOp arr)) (delayArray (concatOp seg))
+    where
+      n  = indexLast (shape arr)
+      sh :. _ = indexInit (shape arr)
+      _  :. k = indexInit (shape seg)
+
+scanl1Sop
+    :: Elt e
+    => (e -> e -> e)
+    -> Chunk (Z :. Int) e
+    -> Chunk (Z :. Int) e
+scanl1Sop _f _xs
+  = $internalError "scanl1Sop" "Not implemented" -- Segmented scan
+
+scanlSop
+    :: Elt e
+    => (e -> e -> e)
+    -> e
+    -> Chunk (Z :. Int) e
+    -> Chunk (Z :. Int) e
+scanlSop _f _z _arr
+  = $internalError "scanlSop" "Not implemented"
+
+scanrSop
+    :: Elt e
+    => (e -> e -> e)
+    -> e
+    -> Chunk (Z :. Int) e
+    -> Chunk (Z :. Int) e
+scanrSop _f _z _arr
+  = $internalError "scanrSop" "Not implemented"
+
+scanr1Sop
+    :: Elt e
+    => (e -> e -> e)
+    -> Chunk (Z :. Int) e
+    -> Chunk (Z :. Int) e
+scanr1Sop _f _arr
+  = $internalError "scanr1Sop" "Not implemented"
+
+
+permuteSop
+    :: (Shape sh, Shape sh', Elt e)
+    => (e -> e -> e)
+    -> (Int -> sh -> sh')
+    -> Chunk sh' e
+    -> Chunk sh  e
+    -> Chunk sh' e
+permuteSop f p def arr
+  = permuteOp f def (\ ix -> indexLast ix .: p (indexLast ix) (indexInit ix)) (delayArray arr)
+
+backpermuteSop
+    :: (Shape sh, Shape sh', Elt e)
+    => sh'
+    -> (Int -> sh' -> sh)
+    -> Chunk sh e
+    -> Chunk sh' e
+backpermuteSop sh' p a
+  = backpermuteOp (indexLast (shape a) .: sh') (\ ix -> indexLast ix .: p (indexLast ix) (indexInit ix)) (delayArray a)
+
+stencilSop
+    :: (Elt a, Elt b, Stencil sh a stencil)
+    => (stencil -> b)
+    -> Boundary (EltRepr a)
+    -> Chunk sh a
+    -> Chunk sh b
+stencilSop _stencil _boundary _arr
+  = $internalError "stencilSop" "Not implemented"
+
+stencil2Sop
+    :: (Elt a, Elt b, Elt c, Stencil sh a stencil1, Stencil sh b stencil2)
+    => (stencil1 -> stencil2 -> c)
+    -> Boundary (EltRepr a)
+    -> Boundary (EltRepr b)
+    -> Chunk sh a
+    -> Chunk sh b
+    -> Chunk sh c
+stencil2Sop _stencil _boundary1 _boundary2 _arr1 _arr2
+  = $internalError "stencil2Sop" "Not implemented"

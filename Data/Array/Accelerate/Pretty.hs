@@ -59,10 +59,10 @@ instance Show (DelayedOpenAcc aenv a) where
 instance Kit acc => Show (PreOpenAfun acc aenv f) where
   show f = renderStyle wide $ prettyPreAfun prettyAcc 0 f
 
-instance Kit acc => Show (PreOpenFun acc env aenv f) where
+instance Kit acc => Show (PreOpenFun acc env senv aenv f) where
   show f = renderStyle wide $ prettyPreFun prettyAcc 0 f
 
-instance Kit acc => Show (PreOpenExp acc env aenv t) where
+instance Kit acc => Show (PreOpenExp acc env senv aenv t) where
   show e = renderStyle wide $ prettyPreExp prettyAcc 0 0 noParens e
 
 instance Kit acc => Show (PreOpenSeq acc aenv senv t) where

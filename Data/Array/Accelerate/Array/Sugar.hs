@@ -919,18 +919,17 @@ newArray sh f = adata `seq` Array (fromElt sh) adata
 
 -- |Create a vector from the concatenation of the given list of vectors.
 --
-concatVectors :: Elt e => [Vector e] -> Vector e
+concatVectors :: Elt e => Int -> [Vector e] -> Vector e
 {-# INLINE concatVectors #-}
-concatVectors vs = adata `seq` Array ((), len) adata
+concatVectors k vs = adata `seq` Array ((), k * length vs) adata
   where
-    offsets     = scanl (+) 0 (map (size . shape) vs)
-    len         = last offsets
     (adata, _)  = runArrayData $ do
-              arr <- newArrayData len
-              sequence_ [ unsafeWriteArrayData arr (i + k) (unsafeIndexArrayData ad i)
-                        | (Array ((), n) ad, k) <- vs `zip` offsets
+              arr <- newArrayData (k * length vs)
+              sequence_ [ unsafeWriteArrayData arr (i + k * j) (unsafeIndexArrayData ad i)
+                        | (Array ((), n) ad, j) <- vs `zip` [0..length vs-1]
                         , i <- [0 .. n - 1] ]
               return (arr, undefined)
+
 
 -- | Creates a new, uninitialized Accelerate array.
 --
